@@ -14,7 +14,7 @@ st.set_page_config(
 )
 
 # 👉 RELLENA ESTO CON TU INFO
-SHEET_ID = "TU_SHEET_ID_AQUI"   # ej: "1SaXuzhY_sJ9Tk9MOLDL..."
+SHEET_ID = "1PLYS284AMaw8XukpR1107BAkbYDHvO8ARzhllzmwEjY"   # ej: "1SaXuzhY_sJ9Tk9MOLDL..."
 SHEET_NAME = "Hoja1"            # nombre de la hoja dentro del archivo
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
