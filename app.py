@@ -90,17 +90,33 @@ def map_columns(df: pd.DataFrame) -> dict:
     column_map = {
         "nombre_proyecto": find_column(df, ["nombre_proyecto", "proyecto", "nombre_del_proyecto"]),
         "comuna": find_column(df, ["comuna"]),
-        "tipo_unidad": find_column(df, ["tipo_unidad", "tipo_de_unidad", "tipo"]),
+        "tipo_unidad": find_column(df, ["tipo_unidad", "tipologia", "tipo_de_unidad", "tipo"]),
         "dormitorios": find_column(df, ["dormitorios", "dorms"]),
         "banos": find_column(df, ["banos", "baños"]),
-        "superficie_total_m2": find_column(df, ["superficie_total_m2", "sup_total_m2", "superficie_total"]),
-        "precio_uf_desde": find_column(df, ["precio_uf_desde", "precio_desde_uf", "precio_desde_en_uf"]),
-        "precio_uf_hasta": find_column(df, ["precio_uf_hasta", "precio_hasta_uf", "precio_hasta_en_uf"]),
+        "superficie_total_m2": find_column(
+            df,
+            ["superficie_total_m2", "sup_total_m2", "superficie_total", "superficie_m2", "m2"]
+        ),
+
+        # En tu planilla el precio viene como `precio_uf`
+        "precio_uf_desde": find_column(
+            df,
+            ["precio_uf_desde", "precio_desde_uf", "precio_desde_en_uf", "precio_uf"]
+        ),
+        "precio_uf_hasta": find_column(
+            df,
+            ["precio_uf_hasta", "precio_hasta_uf", "precio_hasta_en_uf"]
+        ),
+
         "etapa": find_column(df, ["etapa"]),
         "ano_entrega_estimada": find_column(df, ["ano_entrega_estimada", "anio_entrega", "ano_entrega"]),
         "trimestre_entrega_estimada": find_column(df, ["trimestre_entrega_estimada", "trimestre_entrega"]),
-        "estado_comercial": find_column(df, ["estado_comercial", "estado"]),
-        "url_portal": find_column(df, ["url_portal", "url", "link_portal"]),
+
+        # En tu planilla se llama `estado_proyecto`
+        "estado_comercial": find_column(df, ["estado_comercial", "estado_proyecto", "estado"]),
+
+        # En tu planilla se llama `url_proyecto`
+        "url_portal": find_column(df, ["url_portal", "url_proyecto", "url", "link_portal"]),
     }
     return column_map
 
