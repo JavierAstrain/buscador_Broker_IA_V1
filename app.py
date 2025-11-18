@@ -2,8 +2,9 @@ import streamlit as st
 import pandas as pd
 import json
 from io import StringIO
-import altair as alt  # Para gráficos profesionales
-import requests       # Para consultar valor UF en línea
+import altair as alt
+import requests
+from datetime import datetime
 
 from openai import OpenAI
 
@@ -43,75 +44,74 @@ def init_session_state():
         st.session_state.last_recommendations = None
 
     if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []  # lista de {"role": "...", "content": "..."}
+        st.session_state.chat_history = []
 
-    # Config de colores de la UI (personalizable)
-    if "ui_config" not in st.session_state:
-        st.session_state.ui_config = {
-            "primary": "#2563eb",      # azul
-            "accent": "#22c55e",       # verde
-            "background": "#0b1120",   # fondo principal oscuro
-            "sidebar_bg": "#111827",   # sidebar
-            "text": "#f9fafb",         # texto claro
+    # Tema visual personalizable
+    if "theme" not in st.session_state:
+        st.session_state.theme = {
+            "primary_color": "#2563EB",   # Azul
+            "secondary_color": "#0F172A", # Sidebar oscuro
+            "bg_color": "#F8FAFC",        # Fondo claro
         }
 
 
+def inject_custom_css():
+    """Aplica colores elegidos por el usuario a la app."""
+    theme = st.session_state.theme
+    primary = theme["primary_color"]
+    secondary = theme["secondary_color"]
+    bg = theme["bg_color"]
+
+    st.markdown(
+        """
+        <style>
+        .stApp {
+            background-color: %s;
+        }
+        section[data-testid="stSidebar"] > div {
+            background-color: %s;
+        }
+        section[data-testid="stSidebar"] * {
+            color: #E5E7EB !important;
+        }
+        .stButton > button, .stDownloadButton > button {
+            background-color: %s;
+            border-color: %s;
+            color: white;
+        }
+        .stButton > button:hover, .stDownloadButton > button:hover {
+            opacity: 0.9;
+        }
+        h1, h2, h3, h4 {
+            color: #0F172A;
+        }
+        </style>
+        """
+        % (bg, secondary, primary, primary),
+        unsafe_allow_html=True,
+    )
+
+
 init_session_state()
-
-# =========================
-# APLICAR TEMA PERSONALIZADO
-# =========================
-def apply_custom_theme():
-    cfg = st.session_state.ui_config
-    css = f"""
-    <style>
-    /* Fondo general de la app */
-    [data-testid="stAppViewContainer"] {{
-        background-color: {cfg['background']} !important;
-        color: {cfg['text']} !important;
-    }}
-    /* Sidebar */
-    [data-testid="stSidebar"] {{
-        background-color: {cfg['sidebar_bg']} !important;
-        color: {cfg['text']} !important;
-    }}
-    [data-testid="stSidebar"] * {{
-        color: {cfg['text']} !important;
-    }}
-    /* Botones principales */
-    .stButton > button, .stDownloadButton > button {{
-        background-color: {cfg['primary']} !important;
-        color: white !important;
-        border-radius: 6px !important;
-        border: none !important;
-    }}
-    /* Sliders y otros detalles */
-    .stSlider > div > div > div[data-baseweb="slider"] > div {{
-        background-color: {cfg['primary']}33 !important;
-    }}
-    </style>
-    """
-    st.markdown(css, unsafe_allow_html=True)
-
-apply_custom_theme()
+inject_custom_css()
 
 # =========================
 # UTILIDADES
 # =========================
 
 @st.cache_data
-def load_sheet_from_google(csv_url: str) -> pd.DataFrame:
+def load_sheet_from_google(csv_url):
     df = pd.read_csv(csv_url)
     return df
 
 
-def get_default_sheet() -> pd.DataFrame:
+def get_default_sheet():
     sheet_base = "https://docs.google.com/spreadsheets/d/1PLYS284AMaw8XukpR1107BAkbYDHvO8ARzhllzmwEjY"
-    csv_url = f"{sheet_base}/export?format=csv&gid=0"
+    csv_url = "%s/export?format=csv&gid=0" % sheet_base
     return load_sheet_from_google(csv_url)
 
 
-def normalize_name(name: str) -> str:
+def normalize_name(name):
     return (
         name.strip()
         .lower()
@@ -125,7 +125,8 @@ def normalize_name(name: str) -> str:
     )
 
 
-def find_column(df: pd.DataFrame, logical_names) -> str | None:
+def find_column(df, logical_names):
+    """Devuelve el nombre real de la columna o None."""
     norm_to_real = {normalize_name(c): c for c in df.columns}
     for ln in logical_names:
         if ln in norm_to_real:
@@ -133,7 +134,7 @@ def find_column(df: pd.DataFrame, logical_names) -> str | None:
     return None
 
 
-def map_columns(df: pd.DataFrame) -> dict:
+def map_columns(df):
     """Detecta las columnas más importantes de la planilla."""
     column_map = {
         "nombre_proyecto": find_column(df, ["nombre_proyecto", "proyecto", "nombre_del_proyecto"]),
@@ -150,27 +151,30 @@ def map_columns(df: pd.DataFrame) -> dict:
                 "superficie_m2",
                 "m2",
                 "sup_total",
-            ]
+            ],
         ),
-
-        # En tu planilla el precio viene como `precio_uf`
         "precio_uf_desde": find_column(
             df,
-            ["precio_uf_desde", "precio_desde_uf", "precio_desde_en_uf", "precio_uf", "precio_lista_uf"]
+            [
+                "precio_uf_desde",
+                "precio_desde_uf",
+                "precio_desde_en_uf",
+                "precio_uf",
+                "precio_lista_uf",
+            ],
         ),
         "precio_uf_hasta": find_column(
             df,
-            ["precio_uf_hasta", "precio_hasta_uf", "precio_hasta_en_uf"]
+            ["precio_uf_hasta", "precio_hasta_uf", "precio_hasta_en_uf"],
         ),
-
         "etapa": find_column(df, ["etapa"]),
-        "ano_entrega_estimada": find_column(df, ["ano_entrega_estimada", "anio_entrega", "ano_entrega", "ano"]),
-        "trimestre_entrega_estimada": find_column(df, ["trimestre_entrega_estimada", "trimestre_entrega"]),
-
-        # En tu planilla se llama `estado_proyecto`
+        "ano_entrega_estimada": find_column(
+            df, ["ano_entrega_estimada", "anio_entrega", "ano_entrega", "ano"]
+        ),
+        "trimestre_entrega_estimada": find_column(
+            df, ["trimestre_entrega_estimada", "trimestre_entrega"]
+        ),
         "estado_comercial": find_column(df, ["estado_comercial", "estado_proyecto", "estado"]),
-
-        # En tu planilla se llama `url_proyecto`
         "url_portal": find_column(df, ["url_portal", "url_proyecto", "url", "link_portal"]),
     }
     return column_map
@@ -184,8 +188,7 @@ def get_openai_client():
     return OpenAI(api_key=api_key)
 
 
-# --------- función para asegurar tipos numéricos antes de filtrar ----------
-def _ensure_numeric(df: pd.DataFrame, col: str) -> pd.Series:
+def _ensure_numeric(df, col):
     """
     Convierte una columna a numérico de forma segura.
     Si la columna no existe, devuelve una serie llena de NaN.
@@ -201,8 +204,8 @@ def _ensure_numeric(df: pd.DataFrame, col: str) -> pd.Series:
         return pd.Series([pd.NA] * len(df), index=df.index)
 
 
-def get_filtered_df() -> pd.DataFrame:
-    """Aplica filtros basados en el perfil del cliente, garantizando tipos numéricos correctos."""
+def get_filtered_df():
+    """Aplica filtros basados en el perfil del cliente."""
     df = st.session_state.df
     cm = st.session_state.column_map
     cp = st.session_state.client_profile
@@ -212,7 +215,6 @@ def get_filtered_df() -> pd.DataFrame:
 
     df_out = df.copy()
 
-    # --- convertir columnas numéricas antes de filtrar ---
     col_precio_desde = cm.get("precio_uf_desde")
     col_dorms = cm.get("dormitorios")
     col_banos = cm.get("banos")
@@ -230,32 +232,33 @@ def get_filtered_df() -> pd.DataFrame:
     if col_ano:
         df_out[col_ano] = _ensure_numeric(df_out, col_ano)
 
-    # Eliminamos filas sin precio válido
     if col_precio_desde:
         df_out = df_out.dropna(subset=[col_precio_desde])
 
-    # ---- filtros numéricos ----
-    # Precio UF
     if col_precio_desde and col_precio_desde in df_out.columns:
         df_out = df_out[
-            df_out[col_precio_desde].between(float(cp["rango_uf"][0]), float(cp["rango_uf"][1]), inclusive="both")
+            df_out[col_precio_desde].between(
+                float(cp["rango_uf"][0]),
+                float(cp["rango_uf"][1]),
+                inclusive="both",
+            )
         ]
 
-    # Dormitorios
     if col_dorms and col_dorms in df_out.columns:
         df_out = df_out[df_out[col_dorms] >= float(cp["dorms_min"])]
 
-    # Baños
     if col_banos and col_banos in df_out.columns:
         df_out = df_out[df_out[col_banos] >= float(cp["banos_min"])]
 
-    # Superficie
     if col_sup_total and col_sup_total in df_out.columns:
         df_out = df_out[
-            df_out[col_sup_total].between(float(cp["rango_m2"][0]), float(cp["rango_m2"][1]), inclusive="both")
+            df_out[col_sup_total].between(
+                float(cp["rango_m2"][0]),
+                float(cp["rango_m2"][1]),
+                inclusive="both",
+            )
         ]
 
-    # ---- filtros categóricos ----
     col_comuna = cm.get("comuna")
     if col_comuna and cp["comunas"]:
         df_out = df_out[df_out[col_comuna].isin(cp["comunas"])]
@@ -268,7 +271,6 @@ def get_filtered_df() -> pd.DataFrame:
     if col_estado and cp["estados"]:
         df_out = df_out[df_out[col_estado].isin(cp["estados"])]
 
-    # Años entrega (ya están como numéricos)
     if col_ano and col_ano in df_out.columns and cp["anos"]:
         anos_target = [int(float(a)) for a in cp["anos"]]
         df_out = df_out[df_out[col_ano].isin(anos_target)]
@@ -276,28 +278,34 @@ def get_filtered_df() -> pd.DataFrame:
     return df_out
 
 
-def build_client_profile_text() -> str:
+def build_client_profile_text():
     cp = st.session_state.client_profile
-    texto = f"Objetivo del cliente: {cp['objetivo']}.\n"
+    texto = "Objetivo del cliente: %s.\n" % cp["objetivo"]
     if cp["nombre_cliente"]:
-        texto += f"Nombre del cliente: {cp['nombre_cliente']}.\n"
-    texto += f"Rango de precio en UF: {cp['rango_uf'][0]} - {cp['rango_uf'][1]}.\n"
-    texto += f"Dormitorios mínimos: {cp['dorms_min']}. Baños mínimos: {cp['banos_min']}.\n"
-    texto += f"Rango de superficie total: {cp['rango_m2'][0]} - {cp['rango_m2'][1]} m2.\n"
+        texto += "Nombre del cliente: %s.\n" % cp["nombre_cliente"]
+    texto += "Rango de precio en UF: %s - %s.\n" % (cp["rango_uf"][0], cp["rango_uf"][1])
+    texto += "Dormitorios mínimos: %s. Baños mínimos: %s.\n" % (
+        cp["dorms_min"],
+        cp["banos_min"],
+    )
+    texto += "Rango de superficie total: %s - %s m2.\n" % (
+        cp["rango_m2"][0],
+        cp["rango_m2"][1],
+    )
     if cp["comunas"]:
-        texto += "Comunas preferidas: " + ", ".join(map(str, cp["comunas"])) + ".\n"
+        texto += "Comunas preferidas: %s.\n" % ", ".join(map(str, cp["comunas"]))
     if cp["etapas"]:
-        texto += "Etapas preferidas: " + ", ".join(map(str, cp["etapas"])) + ".\n"
+        texto += "Etapas preferidas: %s.\n" % ", ".join(map(str, cp["etapas"]))
     if cp["anos"]:
-        texto += "Años de entrega estimados: " + ", ".join(map(str, cp["anos"])) + ".\n"
+        texto += "Años de entrega estimados: %s.\n" % ", ".join(map(str, cp["anos"]))
     if cp["estados"]:
-        texto += "Estados comerciales preferidos: " + ", ".join(map(str, cp["estados"])) + ".\n"
+        texto += "Estados comerciales preferidos: %s.\n" % ", ".join(map(str, cp["estados"]))
     if cp["comentarios"]:
-        texto += f"Notas adicionales del broker: {cp['comentarios']}\n"
+        texto += "Notas adicionales del broker: %s\n" % cp["comentarios"]
     return texto
 
 
-def prepare_properties_for_ai(df_props: pd.DataFrame, max_props: int = 50):
+def prepare_properties_for_ai(df_props, max_props=50):
     cm = st.session_state.column_map
     df_short = df_props.reset_index(drop=True).head(max_props)
     props = []
@@ -316,10 +324,51 @@ def prepare_properties_for_ai(df_props: pd.DataFrame, max_props: int = 50):
 
 
 # =========================
+# UF EN LÍNEA (FOOTER)
+# =========================
+
+@st.cache_data(ttl=3600)
+def get_uf_value():
+    """Consulta la UF en CLP desde mindicador.cl."""
+    try:
+        resp = requests.get("https://mindicador.cl/api/uf", timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            serie = data.get("serie", [])
+            if serie:
+                valor = float(serie[0]["valor"])
+                fecha = serie[0]["fecha"]
+                return valor, fecha
+    except Exception:
+        return None, None
+    return None, None
+
+
+def show_uf_footer():
+    st.markdown("---")
+    uf_valor, uf_fecha = get_uf_value()
+    if uf_valor:
+        fecha_str = uf_fecha[:10]
+        try:
+            fecha_dt = datetime.fromisoformat(fecha_str)
+            fecha_str = fecha_dt.strftime("%d-%m-%Y")
+        except Exception:
+            pass
+        texto = "💱 Referencia UF hoy: 1 UF ≈ ${:,.0f} CLP (mindicador.cl, {})".format(
+            uf_valor, fecha_str
+        )
+        st.caption(texto.replace(",", "."))
+    else:
+        st.caption(
+            "💱 No se pudo obtener el valor actual de la UF. Revisa tu conexión o inténtalo más tarde."
+        )
+
+
+# =========================
 # IA: RECOMENDACIONES Y CHAT
 # =========================
 
-def ia_recomendaciones(client_profile: str, properties: list, top_k: int = 5):
+def ia_recomendaciones(client_profile, properties, top_k=5):
     client = get_openai_client()
     if client is None:
         return None
@@ -349,17 +398,21 @@ RESPUESTA OBLIGATORIA EN FORMATO JSON:
 }
 """
 
-    user_prompt = f"""
+    user_prompt = """
 PERFIL DEL CLIENTE:
-{client_profile}
+%s
 
 PROPIEDADES DISPONIBLES (JSON):
-{json.dumps(properties, ensure_ascii=False)}
+%s
 
 TAREA:
-- Elige las {top_k} mejores propiedades.
+- Elige las %s mejores propiedades.
 - Devuelve el JSON EXACTAMENTE con la forma indicada.
-"""
+""" % (
+        client_profile,
+        json.dumps(properties, ensure_ascii=False),
+        top_k,
+    )
 
     resp = client.chat.completions.create(
         model="gpt-4.1",
@@ -387,7 +440,7 @@ TAREA:
     return data
 
 
-def ia_chat_libre(mensaje_usuario: str):
+def ia_chat_libre(mensaje_usuario):
     client = get_openai_client()
     if client is None:
         return None
@@ -416,18 +469,23 @@ Objetivo:
 
     messages = [{"role": "system", "content": system_prompt.strip()}]
 
-    # Contexto
-    messages.append({
-        "role": "user",
-        "content": "Contexto inicial (no responder todavía, solo incorpora): " + json.dumps(context, ensure_ascii=False)[:11000]
-    })
-    messages.append({"role": "assistant", "content": "Contexto recibido. Ahora esperaré las preguntas del broker."})
+    messages.append(
+        {
+            "role": "user",
+            "content": "Contexto inicial (no responder todavía, solo incorpora): "
+            + json.dumps(context, ensure_ascii=False)[:11000],
+        }
+    )
+    messages.append(
+        {
+            "role": "assistant",
+            "content": "Contexto recibido. Ahora esperaré las preguntas del broker.",
+        }
+    )
 
-    # Historial de chat
     for m in st.session_state.chat_history:
         messages.append({"role": m["role"], "content": m["content"]})
 
-    # Último mensaje del usuario
     messages.append({"role": "user", "content": mensaje_usuario})
 
     resp = client.chat.completions.create(
@@ -437,42 +495,6 @@ Objetivo:
     )
 
     return resp.choices[0].message.content
-
-
-# =========================
-# VALOR UF EN LÍNEA (FOOTER)
-# =========================
-
-@st.cache_data(ttl=60 * 60)  # cache 1 hora
-def get_uf_clp():
-    """
-    Consulta valor UF en CLP desde mindicador.cl
-    """
-    try:
-        r = requests.get("https://mindicador.cl/api/uf", timeout=5)
-        r.raise_for_status()
-        data = r.json()
-        valor = data["serie"][0]["valor"]
-        fecha = data["serie"][0]["fecha"][:10]  # yyyy-mm-dd
-        return valor, fecha
-    except Exception:
-        return None, None
-
-
-def show_footer():
-    uf, fecha = get_uf_clp()
-    st.markdown("---")
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        if uf:
-            st.markdown(
-                f"💱 **UF hoy aprox.:** ${uf:,.0f} CLP  _(dato: {fecha}, fuente: mindicador.cl)_"
-                .replace(",", ".")
-            )
-        else:
-            st.markdown("💱 No se pudo obtener el valor de la UF en este momento.")
-    with col2:
-        st.markdown("<div style='text-align:right; opacity:0.7;'>Broker IA · Nexa</div>", unsafe_allow_html=True)
 
 
 # =========================
@@ -529,9 +551,6 @@ def show_dashboard():
         st.warning("Primero carga una planilla en **Fuente de propiedades**.")
         return
 
-    # =========================
-    # ENRIQUECER DATAFRAME
-    # =========================
     df_dash = df.copy()
 
     col_precio_desde = cm.get("precio_uf_desde")
@@ -543,7 +562,6 @@ def show_dashboard():
     col_banos = cm.get("banos")
     col_ano = cm.get("ano_entrega_estimada")
 
-    # Aseguramos que sean numéricos
     if col_precio_desde and col_precio_desde in df_dash.columns:
         df_dash[col_precio_desde] = _ensure_numeric(df_dash, col_precio_desde)
     if col_precio_hasta and col_precio_hasta in df_dash.columns:
@@ -551,27 +569,23 @@ def show_dashboard():
     if col_sup and col_sup in df_dash.columns:
         df_dash[col_sup] = _ensure_numeric(df_dash, col_sup)
 
-    # Precio promedio UF (centro del rango)
     if col_precio_desde and col_precio_desde in df_dash.columns:
         if col_precio_hasta and col_precio_hasta in df_dash.columns:
-            df_dash["precio_uf_promedio"] = (df_dash[col_precio_desde] + df_dash[col_precio_hasta]) / 2
+            df_dash["precio_uf_promedio"] = (
+                df_dash[col_precio_desde] + df_dash[col_precio_hasta]
+            ) / 2
         else:
             df_dash["precio_uf_promedio"] = df_dash[col_precio_desde]
     else:
         st.error("No se detectó columna de precio en UF. Revisa el mapeo de columnas.")
         return
 
-    # Precio por m2
     if col_sup and col_sup in df_dash.columns:
         df_dash["precio_uf_m2"] = df_dash["precio_uf_promedio"] / df_dash[col_sup]
     else:
         df_dash["precio_uf_m2"] = None
 
-    # =========================
-    # FILTROS DEL DASHBOARD (independientes del perfil del cliente)
-    # =========================
     with st.expander("🎛️ Filtros del dashboard", expanded=True):
-        # Rango de precio
         uf_min = int(df_dash["precio_uf_promedio"].min())
         uf_max = int(df_dash["precio_uf_promedio"].max())
         rango_uf_dash = st.slider(
@@ -581,7 +595,6 @@ def show_dashboard():
             value=(uf_min, uf_max),
         )
 
-        # Comunas
         if col_comuna and col_comuna in df_dash.columns:
             comunas_disp = sorted(df_dash[col_comuna].dropna().unique())
             comunas_sel = st.multiselect(
@@ -592,7 +605,6 @@ def show_dashboard():
         else:
             comunas_sel = []
 
-        # Tipo de unidad
         if col_tipo and col_tipo in df_dash.columns:
             tipos_disp = sorted(df_dash[col_tipo].dropna().unique())
             tipos_sel = st.multiselect(
@@ -603,7 +615,6 @@ def show_dashboard():
         else:
             tipos_sel = []
 
-        # Dorms / baños
         if col_dorms and col_dorms in df_dash.columns:
             df_dash[col_dorms] = _ensure_numeric(df_dash, col_dorms)
             min_d = int(df_dash[col_dorms].min())
@@ -630,7 +641,6 @@ def show_dashboard():
         else:
             rango_banos = None
 
-        # Año de entrega
         if col_ano and col_ano in df_dash.columns:
             df_dash[col_ano] = _ensure_numeric(df_dash, col_ano)
             anos_disp = sorted(df_dash[col_ano].dropna().unique())
@@ -642,8 +652,10 @@ def show_dashboard():
         else:
             anos_sel = []
 
-    # Aplicar filtros
-    mask = (df_dash["precio_uf_promedio"].between(rango_uf_dash[0], rango_uf_dash[1]))
+    mask = df_dash["precio_uf_promedio"].between(
+        rango_uf_dash[0],
+        rango_uf_dash[1],
+    )
 
     if comunas_sel and col_comuna and col_comuna in df_dash.columns:
         mask &= df_dash[col_comuna].isin(comunas_sel)
@@ -662,9 +674,6 @@ def show_dashboard():
         st.warning("No hay propiedades con los filtros actuales del dashboard.")
         return
 
-    # =========================
-    # KPIs PRINCIPALES DE PRECIO
-    # =========================
     col1, col2, col3, col4 = st.columns(4)
 
     total_props = len(df_dash)
@@ -674,15 +683,12 @@ def show_dashboard():
     precio_med = df_dash["precio_uf_promedio"].median()
     precio_max = df_dash["precio_uf_promedio"].max()
 
-    col2.metric("UF mínima", f"{precio_min:,.0f}".replace(",", "."))
-    col3.metric("UF mediana", f"{precio_med:,.0f}".replace(",", "."))
-    col4.metric("UF máxima", f"{precio_max:,.0f}".replace(",", "."))
+    col2.metric("UF mínima", "{:,.0f}".format(precio_min).replace(",", "."))
+    col3.metric("UF mediana", "{:,.0f}".format(precio_med).replace(",", "."))
+    col4.metric("UF máxima", "{:,.0f}".format(precio_max).replace(",", "."))
 
     st.markdown("---")
 
-    # =========================
-    # GRÁFICO: PRECIO DESDE (MÍNIMO) POR COMUNA
-    # =========================
     if col_comuna and col_comuna in df_dash.columns and col_precio_desde and col_precio_desde in df_dash.columns:
         st.subheader("Precio 'desde' mínimo por comuna (UF)")
 
@@ -698,7 +704,7 @@ def show_dashboard():
             .mark_bar()
             .encode(
                 x=alt.X("precio_min_uf:Q", title="Precio mínimo UF (precio desde)"),
-                y=alt.Y(f"{col_comuna}:N", sort="-x", title="Comuna"),
+                y=alt.Y("%s:N" % col_comuna, sort="-x", title="Comuna"),
                 tooltip=[col_comuna, "precio_min_uf"],
             )
             .properties(height=300)
@@ -707,16 +713,17 @@ def show_dashboard():
 
     st.markdown("---")
 
-    # =========================
-    # GRÁFICOS PROFESIONALES
-    # =========================
     st.subheader("Distribución de precios")
 
     hist = (
         alt.Chart(df_dash)
         .mark_bar()
         .encode(
-            x=alt.X("precio_uf_promedio:Q", bin=alt.Bin(maxbins=30), title="Precio UF (promedio)"),
+            x=alt.X(
+                "precio_uf_promedio:Q",
+                bin=alt.Bin(maxbins=30),
+                title="Precio UF (promedio)",
+            ),
             y=alt.Y("count():Q", title="Cantidad de unidades"),
             tooltip=["count()"],
         )
@@ -724,7 +731,6 @@ def show_dashboard():
     )
     st.altair_chart(hist, use_container_width=True)
 
-    # Precio promedio por comuna
     if col_comuna and col_comuna in df_dash.columns:
         st.subheader("Precio promedio UF por comuna")
 
@@ -740,14 +746,13 @@ def show_dashboard():
             .mark_bar()
             .encode(
                 x=alt.X("uf_promedio:Q", title="UF promedio"),
-                y=alt.Y(f"{col_comuna}:N", sort="-x", title="Comuna"),
+                y=alt.Y("%s:N" % col_comuna, sort="-x", title="Comuna"),
                 tooltip=[col_comuna, "uf_promedio"],
             )
             .properties(height=300)
         )
         st.altair_chart(bar_comuna, use_container_width=True)
 
-    # Precio promedio por tipo de unidad
     if col_tipo and col_tipo in df_dash.columns:
         st.subheader("Precio promedio UF por tipo de unidad")
 
@@ -762,7 +767,7 @@ def show_dashboard():
             alt.Chart(group_tipo)
             .mark_bar()
             .encode(
-                x=alt.X(f"{col_tipo}:N", sort="-y", title="Tipo de unidad"),
+                x=alt.X("%s:N" % col_tipo, sort="-y", title="Tipo de unidad"),
                 y=alt.Y("uf_promedio:Q", title="UF promedio"),
                 tooltip=[col_tipo, "uf_promedio"],
             )
@@ -770,13 +775,11 @@ def show_dashboard():
         )
         st.altair_chart(bar_tipo, use_container_width=True)
 
-    # Scatter precio vs m2
     if col_sup and col_sup in df_dash.columns:
         st.subheader("Relación precio UF vs superficie (m²)")
 
-        # Color por dormitorios si existe
         if col_dorms and col_dorms in df_dash.columns:
-            color_encoding = alt.Color(f"{col_dorms}:O", title="Dormitorios")
+            color_encoding = alt.Color("%s:O" % col_dorms, title="Dormitorios")
         else:
             color_encoding = alt.value("#1f77b4")
 
@@ -798,7 +801,7 @@ def show_dashboard():
             alt.Chart(df_dash.dropna(subset=[col_sup, "precio_uf_promedio"]))
             .mark_circle(size=60, opacity=0.7)
             .encode(
-                x=alt.X(f"{col_sup}:Q", title="Superficie total (m²)"),
+                x=alt.X("%s:Q" % col_sup, title="Superficie total (m²)"),
                 y=alt.Y("precio_uf_promedio:Q", title="Precio UF (promedio)"),
                 color=color_encoding,
                 tooltip=tooltip_fields,
@@ -821,7 +824,9 @@ def show_perfil_cliente():
         return
 
     with st.form("perfil_cliente_form"):
-        cp["nombre_cliente"] = st.text_input("Nombre del cliente (opcional)", value=cp["nombre_cliente"])
+        cp["nombre_cliente"] = st.text_input(
+            "Nombre del cliente (opcional)", value=cp["nombre_cliente"]
+        )
 
         cp["objetivo"] = st.selectbox(
             "Objetivo principal",
@@ -848,7 +853,7 @@ def show_perfil_cliente():
             df_tmp = df.copy()
             df_tmp[col_precio_desde] = _ensure_numeric(df_tmp, col_precio_desde)
             uf_min = int(df_tmp[col_precio_desde].min())
-            uf_max = int(df_tmp[col_precio_desde].max())
+            uf_max = int(df_tmp[col_precicio_desde].max())
         else:
             uf_min, uf_max = 1500, 15000
 
@@ -862,11 +867,15 @@ def show_perfil_cliente():
         col1, col2 = st.columns(2)
         with col1:
             cp["dorms_min"] = st.selectbox(
-                "Dormitorios mínimos", [0, 1, 2, 3, 4, 5], index=[0, 1, 2, 3, 4, 5].index(cp["dorms_min"])
+                "Dormitorios mínimos",
+                [0, 1, 2, 3, 4, 5],
+                index=[0, 1, 2, 3, 4, 5].index(cp["dorms_min"]),
             )
         with col2:
             cp["banos_min"] = st.selectbox(
-                "Baños mínimos", [0, 1, 2, 3, 4], index=[0, 1, 2, 3, 4].index(cp["banos_min"])
+                "Baños mínimos",
+                [0, 1, 2, 3, 4],
+                index=[0, 1, 2, 3, 4].index(cp["banos_min"]),
             )
 
         col_sup = cm.get("superficie_total_m2")
@@ -934,7 +943,9 @@ def show_perfil_cliente():
     st.session_state.client_profile = cp
 
     if submitted:
-        st.success("Perfil de cliente guardado. Se usará en explorador, recomendaciones y Agente IA.")
+        st.success(
+            "Perfil de cliente guardado. Se usará en explorador, recomendaciones y Agente IA."
+        )
 
     st.markdown("### Resumen del perfil actual")
     st.code(build_client_profile_text())
@@ -951,26 +962,30 @@ def show_explorador():
         return
 
     df_filtrado = get_filtered_df()
-    st.write(f"Propiedades encontradas con el perfil actual: **{len(df_filtrado)}**")
+    st.write("Propiedades encontradas con el perfil actual: **%s**" % len(df_filtrado))
 
     if df_filtrado.empty:
         st.info("No hay propiedades con los filtros actuales. Ajusta el perfil del cliente.")
         return
 
-    cols_mostrar = [c for c in [
-        cm.get("nombre_proyecto"),
-        cm.get("comuna"),
-        cm.get("tipo_unidad"),
-        cm.get("dormitorios"),
-        cm.get("banos"),
-        cm.get("superficie_total_m2"),
-        cm.get("precio_uf_desde"),
-        cm.get("precio_uf_hasta"),
-        cm.get("etapa"),
-        cm.get("ano_entrega_estimada"),
-        cm.get("estado_comercial"),
-        cm.get("url_portal"),
-    ] if c is not None]
+    cols_mostrar = [
+        c
+        for c in [
+            cm.get("nombre_proyecto"),
+            cm.get("comuna"),
+            cm.get("tipo_unidad"),
+            cm.get("dormitorios"),
+            cm.get("banos"),
+            cm.get("superficie_total_m2"),
+            cm.get("precio_uf_desde"),
+            cm.get("precio_uf_hasta"),
+            cm.get("etapa"),
+            cm.get("ano_entrega_estimada"),
+            cm.get("estado_comercial"),
+            cm.get("url_portal"),
+        ]
+        if c is not None
+    ]
 
     st.dataframe(df_filtrado[cols_mostrar].reset_index(drop=True))
 
@@ -988,7 +1003,9 @@ def show_recomendaciones():
         st.info("No hay propiedades filtradas. Ajusta el perfil del cliente.")
         return
 
-    st.markdown("El motor IA analizará el perfil del cliente y las propiedades filtradas para sugerir las mejores opciones.")
+    st.markdown(
+        "El motor IA analizará el perfil del cliente y las propiedades filtradas para sugerir las mejores opciones."
+    )
 
     col_left, col_right = st.columns([1, 2])
     with col_left:
@@ -1013,7 +1030,6 @@ def show_recomendaciones():
                 "df_filtrado": df_filtrado.reset_index(drop=True).to_dict("records"),
             }
 
-    # Mostrar recomendaciones guardadas (última ejecución)
     if st.session_state.last_recommendations:
         data = st.session_state.last_recommendations["data"]
         df_snap = pd.DataFrame(st.session_state.last_recommendations["df_filtrado"])
@@ -1044,43 +1060,55 @@ def show_recomendaciones():
             titulo = (
                 fila.get(cm.get("nombre_proyecto"), "Proyecto sin nombre")
                 if cm.get("nombre_proyecto")
-                else f"Proyecto #{idx}"
+                else "Proyecto #%s" % idx
             )
-            st.markdown(f"#### ⭐ Score {score}/10 – {titulo}")
+            st.markdown("#### ⭐ Score %s/10 – %s" % (score, titulo))
 
             info_lineas = []
             if cm.get("comuna"):
-                info_lineas.append(f"**Comuna:** {fila.get(cm['comuna'], '')}")
+                info_lineas.append("**Comuna:** %s" % fila.get(cm["comuna"], ""))
             if cm.get("tipo_unidad"):
-                info_lineas.append(f"**Tipo unidad:** {fila.get(cm['tipo_unidad'], '')}")
+                info_lineas.append("**Tipo unidad:** %s" % fila.get(cm["tipo_unidad"], ""))
             if cm.get("dormitorios") and cm.get("banos"):
                 info_lineas.append(
-                    f"**Programa:** {fila.get(cm['dormitorios'], '')}D / {fila.get(cm['banos'], '')}B"
+                    "**Programa:** %sD / %sB"
+                    % (fila.get(cm["dormitorios"], ""), fila.get(cm["banos"], ""))
                 )
             if cm.get("superficie_total_m2"):
-                info_lineas.append(f"**Sup. total aprox.:** {fila.get(cm['superficie_total_m2'], '')} m²")
+                info_lineas.append(
+                    "**Sup. total aprox.:** %s m²"
+                    % fila.get(cm["superficie_total_m2"], "")
+                )
             if cm.get("precio_uf_desde"):
-                info_lineas.append(f"**Precio desde:** {fila.get(cm['precio_uf_desde'], '')} UF")
+                info_lineas.append(
+                    "**Precio desde:** %s UF" % fila.get(cm["precio_uf_desde"], "")
+                )
             if cm.get("etapa"):
-                info_lineas.append(f"**Etapa:** {fila.get(cm['etapa'], '')}")
+                info_lineas.append("**Etapa:** %s" % fila.get(cm["etapa"], ""))
             if cm.get("ano_entrega_estimada"):
-                info_lineas.append(f"**Entrega estimada:** {fila.get(cm['ano_entrega_estimada'], '')}")
+                info_lineas.append(
+                    "**Entrega estimada:** %s"
+                    % fila.get(cm["ano_entrega_estimada"], "")
+                )
             if cm.get("estado_comercial"):
-                info_lineas.append(f"**Estado comercial:** {fila.get(cm['estado_comercial'], '')}")
+                info_lineas.append(
+                    "**Estado comercial:** %s"
+                    % fila.get(cm["estado_comercial"], "")
+                )
 
             st.markdown("  \n".join(info_lineas))
 
-            st.markdown(f"**Motivo principal:** {motivo}")
+            st.markdown("**Motivo principal:** %s" % motivo)
 
             if argumentos:
                 st.markdown("**Argumentos de venta sugeridos:**")
                 for a in argumentos:
-                    st.markdown(f"- {a}")
+                    st.markdown("- %s" % a)
 
             if cm.get("url_portal"):
                 url = fila.get(cm["url_portal"], "")
                 if isinstance(url, str) and url.strip():
-                    st.markdown(f"[Ver ficha en portal]({url})")
+                    st.markdown("[Ver ficha en portal](%s)" % url)
     else:
         st.info("Aún no se han generado recomendaciones. Usa el botón de arriba.")
 
@@ -1095,10 +1123,11 @@ def show_agente_chat():
 
     df_filtrado = get_filtered_df()
     if df_filtrado.empty:
-        st.info("No hay propiedades filtradas. Ajusta el perfil del cliente antes de hablar con el agente.")
+        st.info(
+            "No hay propiedades filtradas. Ajusta el perfil del cliente antes de hablar con el agente."
+        )
         return
 
-    # Mostrar historial
     for m in st.session_state.chat_history:
         if m["role"] == "user":
             with st.chat_message("user"):
@@ -1107,11 +1136,11 @@ def show_agente_chat():
             with st.chat_message("assistant"):
                 st.markdown(m["content"])
 
-    # Input de chat
-    user_input = st.chat_input("Haz una pregunta al Agente IA (estrategias, comparaciones, etc.)")
+    user_input = st.chat_input(
+        "Haz una pregunta al Agente IA (estrategias, comparaciones, etc.)"
+    )
 
     if user_input:
-        # Guardar mensaje usuario
         st.session_state.chat_history.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
             st.markdown(user_input)
@@ -1120,7 +1149,9 @@ def show_agente_chat():
             with st.spinner("Pensando respuesta..."):
                 respuesta = ia_chat_libre(user_input)
                 st.markdown(respuesta)
-        st.session_state.chat_history.append({"role": "assistant", "content": respuesta})
+        st.session_state.chat_history.append(
+            {"role": "assistant", "content": respuesta}
+        )
 
     st.markdown("---")
     if st.button("🧹 Limpiar conversación"):
@@ -1136,7 +1167,9 @@ def show_exportar():
         return
 
     if not st.session_state.last_recommendations:
-        st.info("Aún no hay recomendaciones guardadas. Genera recomendaciones en la sección **Recomendaciones IA**.")
+        st.info(
+            "Aún no hay recomendaciones guardadas. Genera recomendaciones en la sección **Recomendaciones IA**."
+        )
         return
 
     data = st.session_state.last_recommendations["data"]
@@ -1147,17 +1180,20 @@ def show_exportar():
     estrategia = data.get("estrategia_general", "")
     recomendaciones = data.get("recomendaciones", [])
 
-    st.markdown("Esta sección genera un resumen en texto (formato Markdown) con el perfil del cliente y el plan sugerido.")
-    st.markdown("Luego puedes descargar el archivo y usarlo como base para enviar una propuesta al cliente.")
+    st.markdown(
+        "Esta sección genera un resumen en texto (formato Markdown) con el perfil del cliente y el plan sugerido."
+    )
+    st.markdown(
+        "Luego puedes descargar el archivo y usarlo como base para enviar una propuesta al cliente."
+    )
 
-    # Construir contenido markdown
     md = StringIO()
     md.write("# Propuesta Broker IA\n\n")
     md.write("## Perfil del cliente\n\n")
-    md.write(f"```\n{perfil_texto}\n```\n\n")
+    md.write("```\n%s\n```\n\n" % perfil_texto)
 
     md.write("## Estrategia general sugerida\n\n")
-    md.write(f"{estrategia}\n\n")
+    md.write("%s\n\n" % estrategia)
 
     md.write("## Propiedades recomendadas\n\n")
     for rec in recomendaciones:
@@ -1169,41 +1205,55 @@ def show_exportar():
         titulo = (
             fila.get(cm.get("nombre_proyecto"), "Proyecto sin nombre")
             if cm.get("nombre_proyecto")
-            else f"Proyecto #{idx}"
+            else "Proyecto #%s" % idx
         )
 
-        md.write(f"### {titulo}\n\n")
+        md.write("### %s\n\n" % titulo)
 
-        # Datos básicos
         if cm.get("comuna"):
-            md.write(f"- **Comuna:** {fila.get(cm['comuna'], '')}\n")
+            md.write("- **Comuna:** %s\n" % fila.get(cm["comuna"], ""))
         if cm.get("tipo_unidad"):
-            md.write(f"- **Tipo unidad:** {fila.get(cm['tipo_unidad'], '')}\n")
+            md.write("- **Tipo unidad:** %s\n" % fila.get(cm["tipo_unidad"], ""))
         if cm.get("dormitorios") and cm.get("banos"):
-            md.write(f"- **Programa:** {fila.get(cm['dormitorios'], '')}D / {fila.get(cm['banos'], '')}B\n")
+            md.write(
+                "- **Programa:** %sD / %sB\n"
+                % (fila.get(cm["dormitorios"], ""), fila.get(cm["banos"], ""))
+            )
         if cm.get("superficie_total_m2"):
-            md.write(f"- **Superficie total aprox.:** {fila.get(cm['superficie_total_m2'], '')} m²\n")
+            md.write(
+                "- **Superficie total aprox.:** %s m²\n"
+                % fila.get(cm["superficie_total_m2"], "")
+            )
         if cm.get("precio_uf_desde"):
-            md.write(f"- **Precio desde:** {fila.get(cm['precio_uf_desde'], '')} UF\n")
+            md.write(
+                "- **Precio desde:** %s UF\n" % fila.get(cm["precio_uf_desde"], "")
+            )
         if cm.get("etapa"):
-            md.write(f"- **Etapa:** {fila.get(cm['etapa'], '')}\n")
+            md.write("- **Etapa:** %s\n" % fila.get(cm["etapa"], ""))
         if cm.get("ano_entrega_estimada"):
-            md.write(f"- **Entrega estimada:** {fila.get(cm['ano_entrega_estimada'], '')}\n")
+            md.write(
+                "- **Entrega estimada:** %s\n"
+                % fila.get(cm["ano_entrega_estimada"], "")
+            )
         if cm.get("estado_comercial"):
-            md.write(f"- **Estado comercial:** {fila.get(cm['estado_comercial'], '')}\n")
+            md.write(
+                "- **Estado comercial:** %s\n"
+                % fila.get(cm["estado_comercial"], "")
+            )
         if cm.get("url_portal"):
             url = fila.get(cm["url_portal"], "")
             if isinstance(url, str) and url.strip():
-                md.write(f"- **Link portal:** {url}\n")
+                md.write("- **Link portal:** %s\n" % url)
 
-        # IA
-        md.write(f"- **Score IA:** {rec.get('score')}/10\n")
-        md.write(f"- **Motivo principal:** {rec.get('motivo_principal', '')}\n")
+        md.write("- **Score IA:** %s/10\n" % rec.get("score"))
+        md.write(
+            "- **Motivo principal:** %s\n" % rec.get("motivo_principal", "")
+        )
         argumentos = rec.get("argumentos_venta", [])
         if argumentos:
             md.write("- **Argumentos de venta sugeridos:**\n")
             for a in argumentos:
-                md.write(f"  - {a}\n")
+                md.write("  - %s\n" % a)
 
         md.write("\n")
 
@@ -1221,35 +1271,38 @@ def show_exportar():
 
 
 def show_configuracion():
-    st.header("⚙️ Configuración de la app")
+    st.header("⚙️ Configuración de estilo")
 
-    st.markdown("Personaliza los colores de **Broker IA** según tu marca o preferencia.")
+    theme = st.session_state.theme
 
-    cfg = st.session_state.ui_config
+    st.markdown(
+        "Ajusta los colores principales de Broker IA para que calcen con tu marca o con la inmobiliaria."
+    )
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
-        primary = st.color_picker("Color primario (botones, elementos clave)", cfg["primary"])
-        accent = st.color_picker("Color de acento (detalles, énfasis)", cfg["accent"])
+        primary = st.color_picker(
+            "Color principal (botones, énfasis)", theme["primary_color"]
+        )
     with col2:
-        background = st.color_picker("Fondo principal de la app", cfg["background"])
-        sidebar_bg = st.color_picker("Fondo del menú lateral", cfg["sidebar_bg"])
-
-    text = st.color_picker("Color de texto principal", cfg["text"])
+        secondary = st.color_picker(
+            "Color lateral (sidebar)", theme["secondary_color"]
+        )
+    with col3:
+        bg = st.color_picker("Color de fondo", theme["bg_color"])
 
     if st.button("💾 Guardar colores"):
-        st.session_state.ui_config = {
-            "primary": primary,
-            "accent": accent,
-            "background": background,
-            "sidebar_bg": sidebar_bg,
-            "text": text,
+        st.session_state.theme = {
+            "primary_color": primary,
+            "secondary_color": secondary,
+            "bg_color": bg,
         }
-        st.success("Colores guardados. Refresca la página si no ves los cambios de inmediato.")
+        st.success("Colores actualizados. Recargando app...")
+        st.experimental_rerun()
 
 
 # =========================
-# MENÚ LATERAL (IZQUIERDA)
+# MENÚ LATERAL
 # =========================
 
 st.sidebar.title("Broker IA")
@@ -1270,7 +1323,7 @@ menu = st.sidebar.radio(
 )
 
 # =========================
-# ROUTER DE VISTAS
+# ROUTER
 # =========================
 
 if menu == "Fuente de propiedades":
@@ -1290,5 +1343,5 @@ elif menu == "Exportar propuesta":
 elif menu == "Configuración":
     show_configuracion()
 
-# Footer global (UF en línea)
-show_footer()
+# Footer con UF
+show_uf_footer()
