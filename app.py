@@ -552,20 +552,58 @@ def show_dashboard():
 
     st.markdown("---")
 
-    # KPIs secundarios (por comuna y precio/m2)
+    # =========================
+    # KPIs secundarios (mediana UF por comuna)
+    # =========================
     col5, col6, col7 = st.columns(3)
 
     if col_comuna and col_comuna in df_dash.columns:
+        # Comuna con más oferta
         comuna_counts = df_dash[col_comuna].value_counts()
         comuna_top = comuna_counts.idxmax()
-        col5.metric("Comuna con más oferta", comuna_top)
+        col5.metric("Comuna con más oferta", f"{comuna_top} ({comuna_counts[comuna_top]} unidades)")
 
-        precio_por_comuna = df_dash.groupby(col_comuna)["precio_uf_promedio"].mean().sort_values()
-        comuna_mas_barata = precio_por_comuna.index[0]
-        comuna_mas_cara = precio_por_comuna.index[-1]
+        # Mediana y unidades por comuna
+        resumen_comunas = (
+            df_dash.groupby(col_comuna)
+            .agg(
+                unidades=("precio_uf_promedio", "count"),
+                mediana_uf=("precio_uf_promedio", "median"),
+            )
+            .reset_index()
+        )
 
-        col6.metric("Comuna más barata (UF promedio)", comuna_mas_barata)
-        col7.metric("Comuna más cara (UF promedio)", comuna_mas_cara)
+        # Solo comunas con mínimo N unidades
+        N_MIN = 3
+        resumen_filtrado = resumen_comunas[resumen_comunas["unidades"] >= N_MIN].copy()
+
+        if not resumen_filtrado.empty:
+            resumen_filtrado = resumen_filtrado.sort_values("mediana_uf")
+
+            comuna_mas_barata = resumen_filtrado.iloc[0][col_comuna]
+            uf_mas_barata = resumen_filtrado.iloc[0]["mediana_uf"]
+
+            comuna_mas_cara = resumen_filtrado.iloc[-1][col_comuna]
+            uf_mas_cara = resumen_filtrado.iloc[-1]["mediana_uf"]
+
+            col6.metric(
+                "Comuna más barata (mediana UF)",
+                f"{comuna_mas_barata} (~{uf_mas_barata:,.0f} UF)".replace(",", "."),
+            )
+            col7.metric(
+                "Comuna más cara (mediana UF)",
+                f"{comuna_mas_cara} (~{uf_mas_cara:,.0f} UF)".replace(",", "."),
+            )
+        else:
+            col6.metric("Comuna más barata (mediana UF)", "N/A")
+            col7.metric("Comuna más cara (mediana UF)", "N/A")
+
+        # Tabla resumen para revisar
+        with st.expander("Ver resumen de precios por comuna (mediana UF)", expanded=False):
+            st.dataframe(
+                resumen_comunas.sort_values("mediana_uf"),
+                use_container_width=True,
+            )
     else:
         if "precio_uf_m2" in df_dash.columns and df_dash["precio_uf_m2"].notna().any():
             col5.metric("Precio UF/m² promedio", f"{df_dash['precio_uf_m2'].mean():,.0f}".replace(",", "."))
