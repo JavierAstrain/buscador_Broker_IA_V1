@@ -91,17 +91,24 @@ def map_columns(df: pd.DataFrame) -> dict:
         "nombre_proyecto": find_column(df, ["nombre_proyecto", "proyecto", "nombre_del_proyecto"]),
         "comuna": find_column(df, ["comuna"]),
         "tipo_unidad": find_column(df, ["tipo_unidad", "tipologia", "tipo_de_unidad", "tipo"]),
-        "dormitorios": find_column(df, ["dormitorios", "dorms"]),
-        "banos": find_column(df, ["banos", "baños"]),
+        "dormitorios": find_column(df, ["dormitorios", "dorms", "n_dormitorios", "num_dormitorios"]),
+        "banos": find_column(df, ["banos", "baños", "bano", "n_banos", "num_banos"]),
         "superficie_total_m2": find_column(
             df,
-            ["superficie_total_m2", "sup_total_m2", "superficie_total", "superficie_m2", "m2"]
+            [
+                "superficie_total_m2",
+                "sup_total_m2",
+                "superficie_total",
+                "superficie_m2",
+                "m2",
+                "sup_total",
+            ]
         ),
 
         # En tu planilla el precio viene como `precio_uf`
         "precio_uf_desde": find_column(
             df,
-            ["precio_uf_desde", "precio_desde_uf", "precio_desde_en_uf", "precio_uf"]
+            ["precio_uf_desde", "precio_desde_uf", "precio_desde_en_uf", "precio_uf", "precio_lista_uf"]
         ),
         "precio_uf_hasta": find_column(
             df,
@@ -109,7 +116,7 @@ def map_columns(df: pd.DataFrame) -> dict:
         ),
 
         "etapa": find_column(df, ["etapa"]),
-        "ano_entrega_estimada": find_column(df, ["ano_entrega_estimada", "anio_entrega", "ano_entrega"]),
+        "ano_entrega_estimada": find_column(df, ["ano_entrega_estimada", "anio_entrega", "ano_entrega", "ano"]),
         "trimestre_entrega_estimada": find_column(df, ["trimestre_entrega_estimada", "trimestre_entrega"]),
 
         # En tu planilla se llama `estado_proyecto`
@@ -129,8 +136,26 @@ def get_openai_client():
     return OpenAI(api_key=api_key)
 
 
+# --------- NUEVO: función para asegurar tipos numéricos antes de filtrar ----------
+def _ensure_numeric(df: pd.DataFrame, col: str) -> pd.Series:
+    """
+    Convierte una columna a numérico de forma segura.
+    Si la columna no existe, devuelve una serie llena de NaN.
+    """
+    if col and col in df.columns:
+        # reemplazamos posibles separadores de miles/puntos/raya etc.
+        serie = (
+            df[col]
+            .astype(str)
+            .str.replace(r"[^\d\.\-]", "", regex=True)
+        )
+        return pd.to_numeric(serie, errors="coerce")
+    else:
+        return pd.Series([pd.NA] * len(df), index=df.index)
+
+
 def get_filtered_df() -> pd.DataFrame:
-    """Aplica filtros basados en el perfil del cliente."""
+    """Aplica filtros basados en el perfil del cliente, garantizando tipos numéricos correctos."""
     df = st.session_state.df
     cm = st.session_state.column_map
     cp = st.session_state.client_profile
@@ -140,49 +165,67 @@ def get_filtered_df() -> pd.DataFrame:
 
     df_out = df.copy()
 
-    # Precio UF
+    # --- convertir columnas numéricas antes de filtrar ---
     col_precio_desde = cm.get("precio_uf_desde")
+    col_dorms = cm.get("dormitorios")
+    col_banos = cm.get("banos")
+    col_sup_total = cm.get("superficie_total_m2")
+    col_ano = cm.get("ano_entrega_estimada")
+
+    if col_precio_desde:
+        df_out[col_precio_desde] = _ensure_numeric(df_out, col_precio_desde)
+    if col_dorms:
+        df_out[col_dorms] = _ensure_numeric(df_out, col_dorms)
+    if col_banos:
+        df_out[col_banos] = _ensure_numeric(df_out, col_banos)
+    if col_sup_total:
+        df_out[col_sup_total] = _ensure_numeric(df_out, col_sup_total)
+    if col_ano:
+        df_out[col_ano] = _ensure_numeric(df_out, col_ano)
+
+    # Eliminamos filas sin precio válido, para que el filtro by UF tenga sentido
+    if col_precio_desde:
+        df_out = df_out.dropna(subset=[col_precio_desde])
+
+    # ---- filtros numéricos ----
+    # Precio UF
     if col_precio_desde and col_precio_desde in df_out.columns:
         df_out = df_out[
-            df_out[col_precio_desde].between(cp["rango_uf"][0], cp["rango_uf"][1])
+            df_out[col_precio_desde].between(float(cp["rango_uf"][0]), float(cp["rango_uf"][1]), inclusive="both")
         ]
 
     # Dormitorios
-    col_dorms = cm.get("dormitorios")
     if col_dorms and col_dorms in df_out.columns:
-        df_out = df_out[df_out[col_dorms] >= cp["dorms_min"]]
+        df_out = df_out[df_out[col_dorms] >= float(cp["dorms_min"])]
 
     # Baños
-    col_banos = cm.get("banos")
     if col_banos and col_banos in df_out.columns:
-        df_out = df_out[df_out[col_banos] >= cp["banos_min"]]
+        df_out = df_out[df_out[col_banos] >= float(cp["banos_min"])]
 
     # Superficie
-    col_sup_total = cm.get("superficie_total_m2")
     if col_sup_total and col_sup_total in df_out.columns:
         df_out = df_out[
-            df_out[col_sup_total].between(cp["rango_m2"][0], cp["rango_m2"][1])
+            df_out[col_sup_total].between(float(cp["rango_m2"][0]), float(cp["rango_m2"][1]), inclusive="both")
         ]
 
-    # Comunas
+    # ---- filtros categóricos ----
     col_comuna = cm.get("comuna")
     if col_comuna and cp["comunas"]:
         df_out = df_out[df_out[col_comuna].isin(cp["comunas"])]
 
-    # Etapas
     col_etapa = cm.get("etapa")
     if col_etapa and cp["etapas"]:
         df_out = df_out[df_out[col_etapa].isin(cp["etapas"])]
 
-    # Años entrega
-    col_ano = cm.get("ano_entrega_estimada")
-    if col_ano and cp["anos"]:
-        df_out = df_out[df_out[col_ano].isin(cp["anos"])]
-
-    # Estado comercial
     col_estado = cm.get("estado_comercial")
     if col_estado and cp["estados"]:
         df_out = df_out[df_out[col_estado].isin(cp["estados"])]
+
+    # Años entrega (ya están como numéricos)
+    if col_ano and col_ano in df_out.columns and cp["anos"]:
+        # cp["anos"] viene de un multiselect, suelen ser ints/floats -> normalizamos
+        anos_target = [int(float(a)) for a in cp["anos"]]
+        df_out = df_out[df_out[col_ano].isin(anos_target)]
 
     return df_out
 
@@ -420,11 +463,11 @@ def show_dashboard():
 
     # Aseguramos que sean numéricos
     if col_precio_desde and col_precio_desde in df_dash.columns:
-        df_dash[col_precio_desde] = pd.to_numeric(df_dash[col_precio_desde], errors="coerce")
+        df_dash[col_precio_desde] = _ensure_numeric(df_dash, col_precio_desde)
     if col_precio_hasta and col_precio_hasta in df_dash.columns:
-        df_dash[col_precio_hasta] = pd.to_numeric(df_dash[col_precio_hasta], errors="coerce")
+        df_dash[col_precio_hasta] = _ensure_numeric(df_dash, col_precio_hasta)
     if col_sup and col_sup in df_dash.columns:
-        df_dash[col_sup] = pd.to_numeric(df_dash[col_sup], errors="coerce")
+        df_dash[col_sup] = _ensure_numeric(df_dash, col_sup)
 
     # Precio promedio UF (centro del rango)
     if col_precio_desde and col_precio_desde in df_dash.columns:
@@ -480,6 +523,7 @@ def show_dashboard():
 
         # Dorms / baños
         if col_dorms and col_dorms in df_dash.columns:
+            df_dash[col_dorms] = _ensure_numeric(df_dash, col_dorms)
             min_d = int(df_dash[col_dorms].min())
             max_d = int(df_dash[col_dorms].max())
             rango_dorms = st.slider(
@@ -492,6 +536,7 @@ def show_dashboard():
             rango_dorms = None
 
         if col_banos and col_banos in df_dash.columns:
+            df_dash[col_banos] = _ensure_numeric(df_dash, col_banos)
             min_b = int(df_dash[col_banos].min())
             max_b = int(df_dash[col_banos].max())
             rango_banos = st.slider(
@@ -505,6 +550,7 @@ def show_dashboard():
 
         # Año de entrega
         if col_ano and col_ano in df_dash.columns:
+            df_dash[col_ano] = _ensure_numeric(df_dash, col_ano)
             anos_disp = sorted(df_dash[col_ano].dropna().unique())
             anos_sel = st.multiselect(
                 "Año de entrega estimada",
@@ -717,8 +763,10 @@ def show_perfil_cliente():
 
         col_precio_desde = cm.get("precio_uf_desde")
         if col_precio_desde and col_precio_desde in df.columns:
-            uf_min = int(df[col_precio_desde].min())
-            uf_max = int(df[col_precio_desde].max())
+            df_tmp = df.copy()
+            df_tmp[col_precio_desde] = _ensure_numeric(df_tmp, col_precio_desde)
+            uf_min = int(df_tmp[col_precio_desde].min())
+            uf_max = int(df_tmp[col_precio_desde].max())
         else:
             uf_min, uf_max = 1500, 15000
 
@@ -741,8 +789,10 @@ def show_perfil_cliente():
 
         col_sup = cm.get("superficie_total_m2")
         if col_sup and col_sup in df.columns:
-            sup_min = int(df[col_sup].min())
-            sup_max = int(df[col_sup].max())
+            df_tmp2 = df.copy()
+            df_tmp2[col_sup] = _ensure_numeric(df_tmp2, col_sup)
+            sup_min = int(df_tmp2[col_sup].min())
+            sup_max = int(df_tmp2[col_sup].max())
         else:
             sup_min, sup_max = 20, 150
 
@@ -773,7 +823,9 @@ def show_perfil_cliente():
 
         col_ano = cm.get("ano_entrega_estimada")
         if col_ano and col_ano in df.columns:
-            anos = sorted(df[col_ano].dropna().unique())
+            df_tmp3 = df.copy()
+            df_tmp3[col_ano] = _ensure_numeric(df_tmp3, col_ano)
+            anos = sorted(df_tmp3[col_ano].dropna().unique())
             cp["anos"] = st.multiselect(
                 "Años de entrega estimada",
                 anos,
