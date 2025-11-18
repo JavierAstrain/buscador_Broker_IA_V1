@@ -3,6 +3,7 @@ import pandas as pd
 import json
 from io import StringIO
 import altair as alt  # Para gráficos profesionales
+import requests       # Para consultar valor UF en línea
 
 from openai import OpenAI
 
@@ -44,8 +45,55 @@ def init_session_state():
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []  # lista de {"role": "...", "content": "..."}
 
+    # Config de colores de la UI (personalizable)
+    if "ui_config" not in st.session_state:
+        st.session_state.ui_config = {
+            "primary": "#2563eb",      # azul
+            "accent": "#22c55e",       # verde
+            "background": "#0b1120",   # fondo principal oscuro
+            "sidebar_bg": "#111827",   # sidebar
+            "text": "#f9fafb",         # texto claro
+        }
+
 
 init_session_state()
+
+# =========================
+# APLICAR TEMA PERSONALIZADO
+# =========================
+def apply_custom_theme():
+    cfg = st.session_state.ui_config
+    css = f"""
+    <style>
+    /* Fondo general de la app */
+    [data-testid="stAppViewContainer"] {{
+        background-color: {cfg['background']} !important;
+        color: {cfg['text']} !important;
+    }}
+    /* Sidebar */
+    [data-testid="stSidebar"] {{
+        background-color: {cfg['sidebar_bg']} !important;
+        color: {cfg['text']} !important;
+    }}
+    [data-testid="stSidebar"] * {{
+        color: {cfg['text']} !important;
+    }}
+    /* Botones principales */
+    .stButton > button, .stDownloadButton > button {{
+        background-color: {cfg['primary']} !important;
+        color: white !important;
+        border-radius: 6px !important;
+        border: none !important;
+    }}
+    /* Sliders y otros detalles */
+    .stSlider > div > div > div[data-baseweb="slider"] > div {{
+        background-color: {cfg['primary']}33 !important;
+    }}
+    </style>
+    """
+    st.markdown(css, unsafe_allow_html=True)
+
+apply_custom_theme()
 
 # =========================
 # UTILIDADES
@@ -136,14 +184,13 @@ def get_openai_client():
     return OpenAI(api_key=api_key)
 
 
-# --------- NUEVO: función para asegurar tipos numéricos antes de filtrar ----------
+# --------- función para asegurar tipos numéricos antes de filtrar ----------
 def _ensure_numeric(df: pd.DataFrame, col: str) -> pd.Series:
     """
     Convierte una columna a numérico de forma segura.
     Si la columna no existe, devuelve una serie llena de NaN.
     """
     if col and col in df.columns:
-        # reemplazamos posibles separadores de miles/puntos/raya etc.
         serie = (
             df[col]
             .astype(str)
@@ -183,7 +230,7 @@ def get_filtered_df() -> pd.DataFrame:
     if col_ano:
         df_out[col_ano] = _ensure_numeric(df_out, col_ano)
 
-    # Eliminamos filas sin precio válido, para que el filtro by UF tenga sentido
+    # Eliminamos filas sin precio válido
     if col_precio_desde:
         df_out = df_out.dropna(subset=[col_precio_desde])
 
@@ -223,7 +270,6 @@ def get_filtered_df() -> pd.DataFrame:
 
     # Años entrega (ya están como numéricos)
     if col_ano and col_ano in df_out.columns and cp["anos"]:
-        # cp["anos"] viene de un multiselect, suelen ser ints/floats -> normalizamos
         anos_target = [int(float(a)) for a in cp["anos"]]
         df_out = df_out[df_out[col_ano].isin(anos_target)]
 
@@ -391,6 +437,42 @@ Objetivo:
     )
 
     return resp.choices[0].message.content
+
+
+# =========================
+# VALOR UF EN LÍNEA (FOOTER)
+# =========================
+
+@st.cache_data(ttl=60 * 60)  # cache 1 hora
+def get_uf_clp():
+    """
+    Consulta valor UF en CLP desde mindicador.cl
+    """
+    try:
+        r = requests.get("https://mindicador.cl/api/uf", timeout=5)
+        r.raise_for_status()
+        data = r.json()
+        valor = data["serie"][0]["valor"]
+        fecha = data["serie"][0]["fecha"][:10]  # yyyy-mm-dd
+        return valor, fecha
+    except Exception:
+        return None, None
+
+
+def show_footer():
+    uf, fecha = get_uf_clp()
+    st.markdown("---")
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        if uf:
+            st.markdown(
+                f"💱 **UF hoy aprox.:** ${uf:,.0f} CLP  _(dato: {fecha}, fuente: mindicador.cl)_"
+                .replace(",", ".")
+            )
+        else:
+            st.markdown("💱 No se pudo obtener el valor de la UF en este momento.")
+    with col2:
+        st.markdown("<div style='text-align:right; opacity:0.7;'>Broker IA · Nexa</div>", unsafe_allow_html=True)
 
 
 # =========================
@@ -599,7 +681,7 @@ def show_dashboard():
     st.markdown("---")
 
     # =========================
-    # NUEVO GRÁFICO: PRECIO DESDE (MÍNIMO) POR COMUNA
+    # GRÁFICO: PRECIO DESDE (MÍNIMO) POR COMUNA
     # =========================
     if col_comuna and col_comuna in df_dash.columns and col_precio_desde and col_precio_desde in df_dash.columns:
         st.subheader("Precio 'desde' mínimo por comuna (UF)")
@@ -1138,6 +1220,34 @@ def show_exportar():
     )
 
 
+def show_configuracion():
+    st.header("⚙️ Configuración de la app")
+
+    st.markdown("Personaliza los colores de **Broker IA** según tu marca o preferencia.")
+
+    cfg = st.session_state.ui_config
+
+    col1, col2 = st.columns(2)
+    with col1:
+        primary = st.color_picker("Color primario (botones, elementos clave)", cfg["primary"])
+        accent = st.color_picker("Color de acento (detalles, énfasis)", cfg["accent"])
+    with col2:
+        background = st.color_picker("Fondo principal de la app", cfg["background"])
+        sidebar_bg = st.color_picker("Fondo del menú lateral", cfg["sidebar_bg"])
+
+    text = st.color_picker("Color de texto principal", cfg["text"])
+
+    if st.button("💾 Guardar colores"):
+        st.session_state.ui_config = {
+            "primary": primary,
+            "accent": accent,
+            "background": background,
+            "sidebar_bg": sidebar_bg,
+            "text": text,
+        }
+        st.success("Colores guardados. Refresca la página si no ves los cambios de inmediato.")
+
+
 # =========================
 # MENÚ LATERAL (IZQUIERDA)
 # =========================
@@ -1155,6 +1265,7 @@ menu = st.sidebar.radio(
         "Recomendaciones IA",
         "Agente IA",
         "Exportar propuesta",
+        "Configuración",
     ],
 )
 
@@ -1176,4 +1287,8 @@ elif menu == "Agente IA":
     show_agente_chat()
 elif menu == "Exportar propuesta":
     show_exportar()
+elif menu == "Configuración":
+    show_configuracion()
 
+# Footer global (UF en línea)
+show_footer()
