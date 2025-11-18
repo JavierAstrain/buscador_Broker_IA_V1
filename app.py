@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import json
 from io import StringIO
+import altair as alt  # Para gráficos profesionales
 
 from openai import OpenAI
 
@@ -387,57 +388,274 @@ def show_dashboard():
         st.warning("Primero carga una planilla en **Fuente de propiedades**.")
         return
 
-    df_filtrado = get_filtered_df()
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    total_props = len(df_filtrado)
-    col1.metric("Propiedades filtradas", total_props)
+    # =========================
+    # ENRIQUECER DATAFRAME
+    # =========================
+    df_dash = df.copy()
 
     col_precio_desde = cm.get("precio_uf_desde")
     col_precio_hasta = cm.get("precio_uf_hasta")
-    col_dorms = cm.get("dormitorios")
+    col_sup = cm.get("superficie_total_m2")
     col_comuna = cm.get("comuna")
+    col_tipo = cm.get("tipo_unidad")
+    col_dorms = cm.get("dormitorios")
+    col_banos = cm.get("banos")
     col_ano = cm.get("ano_entrega_estimada")
 
-    if col_precio_desde and col_precio_desde in df_filtrado.columns:
-        col2.metric("UF promedio (desde)", f"{df_filtrado[col_precio_desde].mean():.0f}")
-    if col_precio_hasta and col_precio_hasta in df_filtrado.columns:
-        col3.metric("UF promedio (hasta)", f"{df_filtrado[col_precio_hasta].mean():.0f}")
-    if col_dorms and col_dorms in df_filtrado.columns:
-        col4.metric("Dormitorios más frecuente", int(df_filtrado[col_dorms].mode()[0]))
+    # Aseguramos que sean numéricos
+    if col_precio_desde and col_precio_desde in df_dash.columns:
+        df_dash[col_precio_desde] = pd.to_numeric(df_dash[col_precio_desde], errors="coerce")
+    if col_precio_hasta and col_precio_hasta in df_dash.columns:
+        df_dash[col_precio_hasta] = pd.to_numeric(df_dash[col_precio_hasta], errors="coerce")
+    if col_sup and col_sup in df_dash.columns:
+        df_dash[col_sup] = pd.to_numeric(df_dash[col_sup], errors="coerce")
+
+    # Precio promedio UF (centro del rango)
+    if col_precio_desde and col_precio_desde in df_dash.columns:
+        if col_precio_hasta and col_precio_hasta in df_dash.columns:
+            df_dash["precio_uf_promedio"] = (df_dash[col_precio_desde] + df_dash[col_precio_hasta]) / 2
+        else:
+            df_dash["precio_uf_promedio"] = df_dash[col_precio_desde]
+    else:
+        st.error("No se detectó columna de precio en UF. Revisa el mapeo de columnas.")
+        return
+
+    # Precio por m2
+    if col_sup and col_sup in df_dash.columns:
+        df_dash["precio_uf_m2"] = df_dash["precio_uf_promedio"] / df_dash[col_sup]
+    else:
+        df_dash["precio_uf_m2"] = None
+
+    # =========================
+    # FILTROS DEL DASHBOARD (independientes del perfil del cliente)
+    # =========================
+    with st.expander("🎛️ Filtros del dashboard", expanded=True):
+        # Rango de precio
+        uf_min = int(df_dash["precio_uf_promedio"].min())
+        uf_max = int(df_dash["precio_uf_promedio"].max())
+        rango_uf_dash = st.slider(
+            "Rango de precio (UF, promedio)",
+            min_value=uf_min,
+            max_value=uf_max,
+            value=(uf_min, uf_max),
+        )
+
+        # Comunas
+        if col_comuna and col_comuna in df_dash.columns:
+            comunas_disp = sorted(df_dash[col_comuna].dropna().unique())
+            comunas_sel = st.multiselect(
+                "Comunas",
+                comunas_disp,
+                default=comunas_disp,
+            )
+        else:
+            comunas_sel = []
+
+        # Tipo de unidad
+        if col_tipo and col_tipo in df_dash.columns:
+            tipos_disp = sorted(df_dash[col_tipo].dropna().unique())
+            tipos_sel = st.multiselect(
+                "Tipo de unidad",
+                tipos_disp,
+                default=tipos_disp,
+            )
+        else:
+            tipos_sel = []
+
+        # Dorms / baños
+        if col_dorms and col_dorms in df_dash.columns:
+            min_d = int(df_dash[col_dorms].min())
+            max_d = int(df_dash[col_dorms].max())
+            rango_dorms = st.slider(
+                "Dormitorios",
+                min_value=min_d,
+                max_value=max_d,
+                value=(min_d, max_d),
+            )
+        else:
+            rango_dorms = None
+
+        if col_banos and col_banos in df_dash.columns:
+            min_b = int(df_dash[col_banos].min())
+            max_b = int(df_dash[col_banos].max())
+            rango_banos = st.slider(
+                "Baños",
+                min_value=min_b,
+                max_value=max_b,
+                value=(min_b, max_b),
+            )
+        else:
+            rango_banos = None
+
+        # Año de entrega
+        if col_ano and col_ano in df_dash.columns:
+            anos_disp = sorted(df_dash[col_ano].dropna().unique())
+            anos_sel = st.multiselect(
+                "Año de entrega estimada",
+                anos_disp,
+                default=anos_disp,
+            )
+        else:
+            anos_sel = []
+
+    # Aplicar filtros
+    mask = (df_dash["precio_uf_promedio"].between(rango_uf_dash[0], rango_uf_dash[1]))
+
+    if comunas_sel and col_comuna and col_comuna in df_dash.columns:
+        mask &= df_dash[col_comuna].isin(comunas_sel)
+    if tipos_sel and col_tipo and col_tipo in df_dash.columns:
+        mask &= df_dash[col_tipo].isin(tipos_sel)
+    if rango_dorms and col_dorms and col_dorms in df_dash.columns:
+        mask &= df_dash[col_dorms].between(rango_dorms[0], rango_dorms[1])
+    if rango_banos and col_banos and col_banos in df_dash.columns:
+        mask &= df_dash[col_banos].between(rango_banos[0], rango_banos[1])
+    if anos_sel and col_ano and col_ano in df_dash.columns:
+        mask &= df_dash[col_ano].isin(anos_sel)
+
+    df_dash = df_dash[mask]
+
+    if df_dash.empty:
+        st.warning("No hay propiedades con los filtros actuales del dashboard.")
+        return
+
+    # =========================
+    # KPIs PRINCIPALES DE PRECIO
+    # =========================
+    col1, col2, col3, col4 = st.columns(4)
+
+    total_props = len(df_dash)
+    col1.metric("Propiedades filtradas", total_props)
+
+    precio_min = df_dash["precio_uf_promedio"].min()
+    precio_med = df_dash["precio_uf_promedio"].median()
+    precio_max = df_dash["precio_uf_promedio"].max()
+
+    col2.metric("UF mínima", f"{precio_min:,.0f}".replace(",", "."))
+    col3.metric("UF mediana", f"{precio_med:,.0f}".replace(",", "."))
+    col4.metric("UF máxima", f"{precio_max:,.0f}".replace(",", "."))
 
     st.markdown("---")
 
-    # Gráfico por comuna
-    if col_comuna and col_comuna in df_filtrado.columns:
-        st.subheader("Distribución de propiedades por comuna")
-        comuna_counts = df_filtrado[col_comuna].value_counts().reset_index()
-        comuna_counts.columns = [col_comuna, "cantidad"]
-        st.bar_chart(comuna_counts.set_index(col_comuna))
+    # KPIs secundarios (por comuna y precio/m2)
+    col5, col6, col7 = st.columns(3)
 
-    # Gráfico por tipo de unidad
-    col_tipo = cm.get("tipo_unidad")
-    if col_tipo and col_tipo in df_filtrado.columns:
-        st.subheader("Distribución por tipo de unidad")
-        tipo_counts = df_filtrado[col_tipo].value_counts().reset_index()
-        tipo_counts.columns = [col_tipo, "cantidad"]
-        st.bar_chart(tipo_counts.set_index(col_tipo))
+    if col_comuna and col_comuna in df_dash.columns:
+        comuna_counts = df_dash[col_comuna].value_counts()
+        comuna_top = comuna_counts.idxmax()
+        col5.metric("Comuna con más oferta", comuna_top)
 
-    # Gráfico por año de entrega
-    if col_ano and col_ano in df_filtrado.columns:
-        st.subheader("Unidades por año de entrega estimada")
-        ano_counts = df_filtrado[col_ano].value_counts().sort_index().reset_index()
-        ano_counts.columns = [col_ano, "cantidad"]
-        st.line_chart(ano_counts.set_index(col_ano))
+        precio_por_comuna = df_dash.groupby(col_comuna)["precio_uf_promedio"].mean().sort_values()
+        comuna_mas_barata = precio_por_comuna.index[0]
+        comuna_mas_cara = precio_por_comuna.index[-1]
 
-    # Relación precio vs superficie
-    col_sup = cm.get("superficie_total_m2")
-    if col_precio_desde and col_sup and col_precio_desde in df_filtrado.columns and col_sup in df_filtrado.columns:
-        st.subheader("Relación precio UF (desde) vs superficie total")
-        scatter_df = df_filtrado[[col_precio_desde, col_sup]].dropna()
-        scatter_df = scatter_df.rename(columns={col_precio_desde: "UF_desde", col_sup: "m2"})
-        st.scatter_chart(scatter_df, x="m2", y="UF_desde")
+        col6.metric("Comuna más barata (UF promedio)", comuna_mas_barata)
+        col7.metric("Comuna más cara (UF promedio)", comuna_mas_cara)
+    else:
+        if "precio_uf_m2" in df_dash.columns and df_dash["precio_uf_m2"].notna().any():
+            col5.metric("Precio UF/m² promedio", f"{df_dash['precio_uf_m2'].mean():,.0f}".replace(",", "."))
+
+    st.markdown("---")
+
+    # =========================
+    # GRÁFICOS PROFESIONALES
+    # =========================
+    st.subheader("Distribución de precios")
+
+    hist = (
+        alt.Chart(df_dash)
+        .mark_bar()
+        .encode(
+            x=alt.X("precio_uf_promedio:Q", bin=alt.Bin(maxbins=30), title="Precio UF (promedio)"),
+            y=alt.Y("count():Q", title="Cantidad de unidades"),
+            tooltip=["count()"],
+        )
+        .properties(height=250)
+    )
+    st.altair_chart(hist, use_container_width=True)
+
+    # Precio promedio por comuna
+    if col_comuna and col_comuna in df_dash.columns:
+        st.subheader("Precio promedio UF por comuna")
+
+        group_comuna = (
+            df_dash.groupby(col_comuna)["precio_uf_promedio"]
+            .mean()
+            .reset_index()
+            .rename(columns={"precio_uf_promedio": "uf_promedio"})
+        )
+
+        bar_comuna = (
+            alt.Chart(group_comuna)
+            .mark_bar()
+            .encode(
+                x=alt.X("uf_promedio:Q", title="UF promedio"),
+                y=alt.Y(f"{col_comuna}:N", sort="-x", title="Comuna"),
+                tooltip=[col_comuna, "uf_promedio"],
+            )
+            .properties(height=300)
+        )
+        st.altair_chart(bar_comuna, use_container_width=True)
+
+    # Precio promedio por tipo de unidad
+    if col_tipo and col_tipo in df_dash.columns:
+        st.subheader("Precio promedio UF por tipo de unidad")
+
+        group_tipo = (
+            df_dash.groupby(col_tipo)["precio_uf_promedio"]
+            .mean()
+            .reset_index()
+            .rename(columns={"precio_uf_promedio": "uf_promedio"})
+        )
+
+        bar_tipo = (
+            alt.Chart(group_tipo)
+            .mark_bar()
+            .encode(
+                x=alt.X(f"{col_tipo}:N", sort="-y", title="Tipo de unidad"),
+                y=alt.Y("uf_promedio:Q", title="UF promedio"),
+                tooltip=[col_tipo, "uf_promedio"],
+            )
+            .properties(height=250)
+        )
+        st.altair_chart(bar_tipo, use_container_width=True)
+
+    # Scatter precio vs m2
+    if col_sup and col_sup in df_dash.columns:
+        st.subheader("Relación precio UF vs superficie (m²)")
+
+        # Color por dormitorios si existe
+        if col_dorms and col_dorms in df_dash.columns:
+            color_encoding = alt.Color(f"{col_dorms}:O", title="Dormitorios")
+        else:
+            color_encoding = alt.value("#1f77b4")
+
+        tooltip_fields = []
+        np_col = cm.get("nombre_proyecto")
+        if np_col and np_col in df_dash.columns:
+            tooltip_fields.append(np_col)
+        if col_comuna and col_comuna in df_dash.columns:
+            tooltip_fields.append(col_comuna)
+
+        tooltip_fields.extend(["precio_uf_promedio", col_sup])
+
+        if col_dorms and col_dorms in df_dash.columns:
+            tooltip_fields.append(col_dorms)
+        if col_banos and col_banos in df_dash.columns:
+            tooltip_fields.append(col_banos)
+
+        scatter = (
+            alt.Chart(df_dash.dropna(subset=[col_sup, "precio_uf_promedio"]))
+            .mark_circle(size=60, opacity=0.7)
+            .encode(
+                x=alt.X(f"{col_sup}:Q", title="Superficie total (m²)"),
+                y=alt.Y("precio_uf_promedio:Q", title="Precio UF (promedio)"),
+                color=color_encoding,
+                tooltip=tooltip_fields,
+            )
+            .properties(height=350)
+        )
+
+        st.altair_chart(scatter, use_container_width=True)
 
 
 def show_perfil_cliente():
