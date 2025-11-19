@@ -583,51 +583,77 @@ def fetch_chile_news(sources):
 
 
 @st.cache_data(ttl=43200)
-def fetch_cmf_tasas():
+@st.cache_data(ttl=3600)
+def fetch_sbif_tasas():
     """
-    Obtiene tabla de tasas hipotecarias desde CMF (scraping liviano).
-    Retorna: (rows, headers)
-    rows: lista de dicts
-    headers: lista de nombres de columnas
+    Obtiene tasas hipotecarias por banco desde la API del SBIF.
+    Requiere SBIF_API_KEY en st.secrets.
     """
-    url = "https://www.cmfchile.cl/institucional/mercados/tasas_creditos_hipotecarios.php"
-    try:
-        from bs4 import BeautifulSoup
-    except ImportError:
-        st.error("Falta el paquete 'beautifulsoup4'. Añade 'beautifulsoup4' a requirements.txt.")
-        return [], []
+    api_key = st.secrets.get("SBIF_API_KEY", None)
+    if not api_key:
+        return None, "Falta SBIF_API_KEY en st.secrets"
+
+    year = datetime.now().year
+
+    url = (
+        "https://api.sbif.cl/api-sbifv3/recursos_api/"
+        f"tasashipotecarias/{year}?apikey={api_key}&formato=json"
+    )
 
     try:
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, timeout=15)
         if resp.status_code != 200:
-            return [], []
-        html = resp.text
-        soup = BeautifulSoup(html, "html.parser")
+            return None, f"Error SBIF HTTP {resp.status_code}"
 
-        # Tomar la primera tabla de datos relevante
-        table = soup.find("table")
-        if table is None:
-            return [], []
+        data = resp.json()
+        if "TasasHipotecarias" not in data:
+            return None, "La API SBIF no devolvió 'TasasHipotecarias'."
 
-        # Encabezados
-        header_cells = table.find("tr").find_all(["th", "td"])
-        headers = [h.get_text(strip=True) for h in header_cells]
+        df = pd.DataFrame(data["TasasHipotecarias"])
 
-        rows = []
-        for tr in table.find_all("tr")[1:]:
-            cells = tr.find_all("td")
-            if not cells:
-                continue
-            values = [c.get_text(strip=True) for c in cells]
-            if len(values) != len(headers):
-                # Alinear por si acaso
-                values = values + [""] * (len(headers) - len(values))
-            row_dict = dict(zip(headers, values))
-            rows.append(row_dict)
+        # Normalizar nombres de columnas típicos
+        rename_map = {}
+        if "Institucion" in df.columns:
+            rename_map["Institucion"] = "Banco"
+        if "Tipo" in df.columns:
+            rename_map["Tipo"] = "TipoCredito"
+        if "Tasa" in df.columns:
+            rename_map["Tasa"] = "Tasa"
+        if "Plazo" in df.columns:
+            rename_map["Plazo"] = "Plazo"
+        if "Pie" in df.columns:
+            rename_map["Pie"] = "PieMinimo"
 
-        return rows, headers
-    except Exception:
-        return [], []
+        if rename_map:
+            df.rename(columns=rename_map, inplace=True)
+
+        # Convertir "Tasa" a número flotante
+        if "Tasa" in df.columns:
+            df["Tasa_float"] = (
+                df["Tasa"]
+                .astype(str)
+                .str.replace("%", "", regex=False)
+                .str.replace(",", ".", regex=False)
+            )
+            df["Tasa_float"] = pd.to_numeric(df["Tasa_float"], errors="coerce")
+
+        return df, None
+
+    except Exception as e:
+        return None, str(e)
+
+
+def compute_tasa_promedio_sbif(df_tasas):
+    """Promedio simple de la tasa hipotecaria en %."""
+    if df_tasas is None or df_tasas.empty:
+        return None
+    if "Tasa_float" not in df_tasas.columns:
+        return None
+
+    serie = df_tasas["Tasa_float"].dropna()
+    if serie.empty:
+        return None
+    return float(serie.mean())
 
 
 def compute_tasa_promedio_mercado(rows):
