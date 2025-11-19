@@ -848,12 +848,13 @@ def show_perfil_cliente():
             ].index(cp["objetivo"]),
         )
 
+        # ---- Rango de precio UF según la planilla ----
         col_precio_desde = cm.get("precio_uf_desde")
         if col_precio_desde and col_precio_desde in df.columns:
             df_tmp = df.copy()
             df_tmp[col_precio_desde] = _ensure_numeric(df_tmp, col_precio_desde)
             uf_min = int(df_tmp[col_precio_desde].min())
-            uf_max = int(df_tmp[col_precicio_desde].max())
+            uf_max = int(df_tmp[col_precio_desde].max())
         else:
             uf_min, uf_max = 1500, 15000
 
@@ -878,6 +879,7 @@ def show_perfil_cliente():
                 index=[0, 1, 2, 3, 4].index(cp["banos_min"]),
             )
 
+        # ---- Rango de superficie ----
         col_sup = cm.get("superficie_total_m2")
         if col_sup and col_sup in df.columns:
             df_tmp2 = df.copy()
@@ -894,6 +896,7 @@ def show_perfil_cliente():
             value=(cp["rango_m2"][0], cp["rango_m2"][1]),
         )
 
+        # ---- Filtros por comuna / etapa / año / estado ----
         col_comuna = cm.get("comuna")
         if col_comuna and col_comuna in df.columns:
             comunas = sorted(df[col_comuna].dropna().unique())
@@ -940,12 +943,11 @@ def show_perfil_cliente():
 
         submitted = st.form_submit_button("💾 Guardar perfil")
 
+    # Fuera del form
     st.session_state.client_profile = cp
 
     if submitted:
-        st.success(
-            "Perfil de cliente guardado. Se usará en explorador, recomendaciones y Agente IA."
-        )
+        st.success("Perfil de cliente guardado. Se usará en explorador, recomendaciones y Agente IA.")
 
     st.markdown("### Resumen del perfil actual")
     st.code(build_client_profile_text())
