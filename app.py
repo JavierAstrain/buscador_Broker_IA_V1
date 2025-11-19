@@ -510,150 +510,89 @@ Objetivo:
 # =========================
 
 @st.cache_data(ttl=1800)
-
-NEWS_KEYWORDS = [
-    "inmobiliario",
-    "departamento",
-    "departamentos",
-    "vivienda",
-    "propiedad",
-    "proyecto",
-    "proyectos",
-    "inversión",
-    "arriendo",
-    "arrienda",
-    "compra",
-    "venta",
-    "uf",
-    "hipotecario",
-    "hipotecaria",
-    "crédito",
-    "créditos",
-    "plusvalía",
-    "construcción",
-    "inmobiliaria",
-    "edificio",
-]
-
-@st.cache_data(ttl=1800)
 def fetch_chile_news(sources):
     """
-    Obtiene noticias desde RSS chilenas y filtra SOLO noticias del rubro
-    inmobiliario / hipotecario usando palabras clave.
+    Lee noticias desde una lista de RSS (fuentes chilenas).
+    Retorna lista de dicts: {titulo, resumen, link, fuente, fecha}
     """
     try:
         import feedparser
     except ImportError:
-        st.error("Falta instalar 'feedparser' en requirements.txt")
+        st.error("Falta el paquete 'feedparser'. Añade 'feedparser' a requirements.txt.")
         return []
 
     noticias = []
-
     for url in sources:
         try:
             feed = feedparser.parse(url)
+            fuente = feed.feed.title if hasattr(feed, "feed") and "title" in feed.feed else url
+            for entry in feed.entries[:5]:
+                titulo = getattr(entry, "title", "").strip()
+                resumen = getattr(entry, "summary", "").strip()
+                link = getattr(entry, "link", "").strip()
+                fecha = getattr(entry, "published", "") or getattr(entry, "updated", "")
+                if titulo:
+                    noticias.append(
+                        {
+                            "titulo": titulo,
+                            "resumen": resumen,
+                            "link": link,
+                            "fuente": fuente,
+                            "fecha": fecha,
+                        }
+                    )
         except Exception:
             continue
-
-        fuente = getattr(feed.feed, "title", url) if hasattr(feed, "feed") else url
-
-        for entry in feed.entries[:30]:
-            titulo = getattr(entry, "title", "") or ""
-            resumen = getattr(entry, "summary", "") or ""
-            link = getattr(entry, "link", "") or ""
-            fecha = getattr(entry, "published", "") or getattr(entry, "updated", "")
-
-            texto = (titulo + " " + resumen).lower()
-
-            # Filtrar solo noticias inmobiliarias
-            if not any(k in texto for k in NEWS_KEYWORDS):
-                continue
-
-            noticias.append(
-                {
-                    "titulo": titulo.strip(),
-                    "resumen": resumen.strip(),
-                    "link": link.strip(),
-                    "fecha": fecha,
-                    "fuente": fuente,
-                }
-            )
 
     return noticias
 
 
 @st.cache_data(ttl=43200)
-@st.cache_data(ttl=3600)
-def fetch_sbif_tasas():
+def fetch_cmf_tasas():
     """
-    Obtiene tasas hipotecarias por banco desde la API del SBIF.
-    Requiere SBIF_API_KEY en st.secrets.
+    Obtiene tabla de tasas hipotecarias desde CMF (scraping liviano).
+    Retorna: (rows, headers)
+    rows: lista de dicts
+    headers: lista de nombres de columnas
     """
-    api_key = st.secrets.get("SBIF_API_KEY", None)
-    if not api_key:
-        return None, "Falta SBIF_API_KEY en st.secrets"
-
-    year = datetime.now().year
-
-    url = (
-        "https://api.sbif.cl/api-sbifv3/recursos_api/"
-        f"tasashipotecarias/{year}?apikey={api_key}&formato=json"
-    )
+    url = "https://www.cmfchile.cl/institucional/mercados/tasas_creditos_hipotecarios.php"
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        st.error("Falta el paquete 'beautifulsoup4'. Añade 'beautifulsoup4' a requirements.txt.")
+        return [], []
 
     try:
-        resp = requests.get(url, timeout=15)
+        resp = requests.get(url, timeout=10)
         if resp.status_code != 200:
-            return None, f"Error SBIF HTTP {resp.status_code}"
+            return [], []
+        html = resp.text
+        soup = BeautifulSoup(html, "html.parser")
 
-        data = resp.json()
-        if "TasasHipotecarias" not in data:
-            return None, "La API SBIF no devolvió 'TasasHipotecarias'."
+        # Tomar la primera tabla de datos relevante
+        table = soup.find("table")
+        if table is None:
+            return [], []
 
-        df = pd.DataFrame(data["TasasHipotecarias"])
+        # Encabezados
+        header_cells = table.find("tr").find_all(["th", "td"])
+        headers = [h.get_text(strip=True) for h in header_cells]
 
-        # Normalizar nombres de columnas típicos
-        rename_map = {}
-        if "Institucion" in df.columns:
-            rename_map["Institucion"] = "Banco"
-        if "Tipo" in df.columns:
-            rename_map["Tipo"] = "TipoCredito"
-        if "Tasa" in df.columns:
-            rename_map["Tasa"] = "Tasa"
-        if "Plazo" in df.columns:
-            rename_map["Plazo"] = "Plazo"
-        if "Pie" in df.columns:
-            rename_map["Pie"] = "PieMinimo"
+        rows = []
+        for tr in table.find_all("tr")[1:]:
+            cells = tr.find_all("td")
+            if not cells:
+                continue
+            values = [c.get_text(strip=True) for c in cells]
+            if len(values) != len(headers):
+                # Alinear por si acaso
+                values = values + [""] * (len(headers) - len(values))
+            row_dict = dict(zip(headers, values))
+            rows.append(row_dict)
 
-        if rename_map:
-            df.rename(columns=rename_map, inplace=True)
-
-        # Convertir "Tasa" a número flotante
-        if "Tasa" in df.columns:
-            df["Tasa_float"] = (
-                df["Tasa"]
-                .astype(str)
-                .str.replace("%", "", regex=False)
-                .str.replace(",", ".", regex=False)
-            )
-            df["Tasa_float"] = pd.to_numeric(df["Tasa_float"], errors="coerce")
-
-        return df, None
-
-    except Exception as e:
-        return None, str(e)
-
-
-def compute_tasa_promedio_sbif(df_tasas):
-    """Promedio simple de la tasa hipotecaria en %."""
-    if df_tasas is None or df_tasas.empty:
-        return None
-    if "Tasa_float" not in df_tasas.columns:
-        return None
-
-    serie = df_tasas["Tasa_float"].dropna()
-    if serie.empty:
-        return None
-    return float(serie.mean())
+        return rows, headers
+    except Exception:
+        return [], []
 
 
 def compute_tasa_promedio_mercado(rows):
