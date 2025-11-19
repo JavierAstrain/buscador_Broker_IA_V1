@@ -104,6 +104,47 @@ init_session_state()
 inject_custom_css()
 
 # =========================
+# CONTEXTO EXPERTO CHILE
+# =========================
+
+CHILE_CONTEXT = """
+Eres un analista inmobiliario chileno experto (años 2023–2025). Usa siempre este criterio:
+
+🔵 Comunas con plusvalía estable o interesante:
+- Ñuñoa, Providencia, Macul, San Miguel, La Florida (en zonas bien conectadas)
+- Las Condes, Vitacura, Lo Barnechea (segmento alto)
+- Independencia y Recoleta en ejes con buena conectividad (metro, servicios).
+
+🔴 Comunas de riesgo o con advertencias:
+- Estación Central: sobreoferta de edificios, micro-unidades, problemas de habitabilidad y plusvalía presionada a la baja.
+- Santiago Centro: sectores saturados, mayor percepción de inseguridad, vacancia y presión a la baja en algunos productos.
+- Evitar recomendar micro-unidades (menos de 25–28 m²) salvo casos muy específicos de inversión de alto riesgo.
+
+📈 Tendencias Chile 2023–2025:
+- Tasas hipotecarias venían altas y han empezado a moderarse, pero siguen influyendo fuertemente en capacidad de compra.
+- Mucha demanda de arriendo en zonas bien conectadas y con servicios.
+- Departamentos 2D/2B suelen ser el sweet spot para familias jóvenes y renta estable.
+- Entrega inmediata es muy atractiva para inversionistas que buscan renta rápida y menos riesgo de cambios de condiciones.
+
+📉 Evitar recomendar:
+- Proyectos con densidad extrema y estándar dudoso.
+- Comunas / sectores con mala percepción de seguridad y baja liquidez.
+- Unidades demasiado pequeñas que se dificulten revender.
+
+Siempre responde con análisis realista, tono profesional chileno y foco en ayudar al broker a verse como un asesor experto.
+"""
+
+# Palabras clave para filtrar noticias exclusivamente inmobiliarias
+NEWS_KEYWORDS = [
+    "inmobiliario", "inmobiliaria", "vivienda", "viviendas",
+    "departamento", "departamentos", "propiedad", "propiedades",
+    "proyecto", "proyectos", "arriendo", "arrienda",
+    "compra", "venta", "uf", "hipotecario", "hipotecaria",
+    "crédito hipotecario", "créditos hipotecarios", "plusvalía",
+    "construcción", "edificio", "subsidio ds", "subsidio habitacional"
+]
+
+# =========================
 # UTILIDADES
 # =========================
 
@@ -381,15 +422,18 @@ def ia_recomendaciones(client_profile, properties, top_k=5):
     if client is None:
         return None
 
-    system_prompt = """
-Eres un asesor inmobiliario senior en Chile, experto en proyectos nuevos.
+    system_prompt = (
+        "Eres un asesor inmobiliario senior en Chile, experto en proyectos nuevos.\n"
+        + CHILE_CONTEXT
+        + """
 Analizas el perfil del cliente y una lista de propiedades.
 Objetivo:
 
 1. Seleccionar las mejores propiedades para ese cliente.
-2. Explicar por qué son buenas opciones.
-3. Dar argumentos comerciales concretos para que el broker cierre la venta.
-4. Proponer una estrategia general de inversión (renta, plusvalía, portafolio, etc.).
+2. Evitar recomendar comunas riesgosas o productos con mala plusvalía según el contexto.
+3. Explicar por qué son buenas opciones.
+4. Dar argumentos comerciales concretos para que el broker cierre la venta.
+5. Proponer una estrategia general de inversión (renta, plusvalía, portafolio, etc.).
 
 RESPUESTA OBLIGATORIA EN FORMATO JSON:
 
@@ -405,6 +449,7 @@ RESPUESTA OBLIGATORIA EN FORMATO JSON:
   "estrategia_general": "<texto explicando la estrategia inmobiliaria para este cliente>"
 }
 """
+    )
 
     user_prompt = """
 PERFIL DEL CLIENTE:
@@ -415,6 +460,7 @@ PROPIEDADES DISPONIBLES (JSON):
 
 TAREA:
 - Elige las %s mejores propiedades.
+- Evita recomendar comunas claramente riesgosas según el contexto experto.
 - Devuelve el JSON EXACTAMENTE con la forma indicada.
 """ % (
         client_profile,
@@ -457,8 +503,10 @@ def ia_chat_libre(mensaje_usuario):
     props_list = prepare_properties_for_ai(df_filtrado, max_props=40)
     perfil_texto = build_client_profile_text()
 
-    system_prompt = """
-Eres un asesor inmobiliario y de inversiones experto en Chile.
+    system_prompt = (
+        "Eres un asesor inmobiliario y de inversiones experto en Chile.\n"
+        + CHILE_CONTEXT
+        + """
 Tienes:
 - Perfil del cliente.
 - Lista de propiedades nuevas filtradas.
@@ -468,7 +516,9 @@ Objetivo:
 - Dar respuestas claras, accionables y profesionales.
 - Recomendar comunas, tipos de unidades, estrategias (renta, plusvalía, portafolio).
 - Usar UF y CLP, realidad chilena y lenguaje cercano pero profesional.
+- Evitar sugerir comunas o productos marcados como riesgosos en el contexto.
 """
+    )
 
     context = {
         "perfil_cliente": perfil_texto,
@@ -512,7 +562,8 @@ Objetivo:
 @st.cache_data(ttl=1800)
 def fetch_chile_news(sources):
     """
-    Lee noticias desde una lista de RSS (fuentes chilenas).
+    Lee noticias desde una lista de RSS (fuentes chilenas) y filtra SOLO noticias
+    inmobiliarias / hipotecarias mediante palabras clave.
     Retorna lista de dicts: {titulo, resumen, link, fuente, fecha}
     """
     try:
@@ -526,102 +577,107 @@ def fetch_chile_news(sources):
         try:
             feed = feedparser.parse(url)
             fuente = feed.feed.title if hasattr(feed, "feed") and "title" in feed.feed else url
-            for entry in feed.entries[:5]:
+            for entry in feed.entries[:20]:
                 titulo = getattr(entry, "title", "").strip()
                 resumen = getattr(entry, "summary", "").strip()
                 link = getattr(entry, "link", "").strip()
                 fecha = getattr(entry, "published", "") or getattr(entry, "updated", "")
-                if titulo:
-                    noticias.append(
-                        {
-                            "titulo": titulo,
-                            "resumen": resumen,
-                            "link": link,
-                            "fuente": fuente,
-                            "fecha": fecha,
-                        }
-                    )
+                if not titulo:
+                    continue
+
+                texto = (titulo + " " + resumen).lower()
+                if not any(k in texto for k in NEWS_KEYWORDS):
+                    continue  # filtrar lo que no sea del rubro inmobiliario
+
+                noticias.append(
+                    {
+                        "titulo": titulo,
+                        "resumen": resumen,
+                        "link": link,
+                        "fuente": fuente,
+                        "fecha": fecha,
+                    }
+                )
         except Exception:
             continue
 
     return noticias
 
 
-@st.cache_data(ttl=43200)
-def fetch_cmf_tasas():
+@st.cache_data(ttl=3600)
+def fetch_sbif_tasas():
     """
-    Obtiene tabla de tasas hipotecarias desde CMF (scraping liviano).
-    Retorna: (rows, headers)
-    rows: lista de dicts
-    headers: lista de nombres de columnas
+    Obtiene tabla de tasas hipotecarias desde SBIF (API).
+    Retorna: (df_tasas, error_str)
     """
-    url = "https://www.cmfchile.cl/institucional/mercados/tasas_creditos_hipotecarios.php"
-    try:
-        from bs4 import BeautifulSoup
-    except ImportError:
-        st.error("Falta el paquete 'beautifulsoup4'. Añade 'beautifulsoup4' a requirements.txt.")
-        return [], []
+    api_key = st.secrets.get("SBIF_API_KEY", None)
+    if not api_key:
+        return None, "Falta SBIF_API_KEY en st.secrets"
+
+    year = datetime.now().year
+    url = (
+        f"https://api.sbif.cl/api-sbifv3/recursos_api/tasashipotecarias/{year}"
+        f"?apikey={api_key}&formato=json"
+    )
 
     try:
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, timeout=15)
         if resp.status_code != 200:
-            return [], []
-        html = resp.text
-        soup = BeautifulSoup(html, "html.parser")
+            return None, f"Error SBIF HTTP {resp.status_code}"
 
-        # Tomar la primera tabla de datos relevante
-        table = soup.find("table")
-        if table is None:
-            return [], []
+        data = resp.json()
+        if "TasasHipotecarias" not in data:
+            return None, "La API SBIF no devolvió 'TasasHipotecarias'."
 
-        # Encabezados
-        header_cells = table.find("tr").find_all(["th", "td"])
-        headers = [h.get_text(strip=True) for h in header_cells]
+        df = pd.DataFrame(data["TasasHipotecarias"])
 
-        rows = []
-        for tr in table.find_all("tr")[1:]:
-            cells = tr.find_all("td")
-            if not cells:
-                continue
-            values = [c.get_text(strip=True) for c in cells]
-            if len(values) != len(headers):
-                # Alinear por si acaso
-                values = values + [""] * (len(headers) - len(values))
-            row_dict = dict(zip(headers, values))
-            rows.append(row_dict)
+        # Normalizar nombres de columnas típicos
+        rename_map = {}
+        if "Institucion" in df.columns:
+            rename_map["Institucion"] = "Banco"
+        if "Tipo" in df.columns:
+            rename_map["Tipo"] = "TipoCredito"
+        if "Tasa" in df.columns:
+            rename_map["Tasa"] = "Tasa"
+        if "Plazo" in df.columns:
+            rename_map["Plazo"] = "Plazo"
+        if "Pie" in df.columns:
+            rename_map["Pie"] = "PieMinimo"
 
-        return rows, headers
-    except Exception:
-        return [], []
+        if rename_map:
+            df.rename(columns=rename_map, inplace=True)
+
+        # Convertir "Tasa" a número flotante
+        if "Tasa" in df.columns:
+            df["Tasa_float"] = (
+                df["Tasa"]
+                .astype(str)
+                .str.replace("%", "", regex=False)
+                .str.replace(",", ".", regex=False)
+            )
+            df["Tasa_float"] = pd.to_numeric(df["Tasa_float"], errors="coerce")
+
+        return df, None
+
+    except Exception as e:
+        return None, str(e)
 
 
-def compute_tasa_promedio_mercado(rows):
+def compute_tasa_promedio_sbif(df_tasas):
     """
-    Calcula una tasa promedio de mercado a partir de columnas que contengan 'Fija'.
-    Devuelve float o None.
+    Calcula una tasa promedio simple (en %) a partir de df_tasas SBIF.
     """
-    if not rows:
+    if df_tasas is None or df_tasas.empty:
         return None
-
-    tasas = []
-    for r in rows:
-        for k, v in r.items():
-            if "fija" in k.lower():
-                txt = v.replace("%", "").replace(",", ".").strip()
-                try:
-                    val = float(txt)
-                    tasas.append(val)
-                except Exception:
-                    pass
-                break
-
-    if not tasas:
+    if "Tasa_float" not in df_tasas.columns:
         return None
+    serie = df_tasas["Tasa_float"].dropna()
+    if serie.empty:
+        return None
+    return float(serie.mean())
 
-    return sum(tasas) / len(tasas)
 
-
-def ia_insights_mercado(noticias, tasas_rows, uf_valor):
+def ia_insights_mercado(noticias, df_tasas, uf_valor):
     """
     IA que combina noticias + tasas hipotecarias + UF para dar insights de mercado.
     """
@@ -630,27 +686,33 @@ def ia_insights_mercado(noticias, tasas_rows, uf_valor):
         return None
 
     # Compactar contexto
-    top_news = noticias[:8]
+    top_news = noticias[:8] if noticias else []
     resumen_noticias = [
         f"- {n['titulo']} ({n['fuente']})"
         for n in top_news
     ]
 
-    top_tasas = tasas_rows[:10]
+    tasas_resumen = []
+    if df_tasas is not None and not df_tasas.empty:
+        cols = [c for c in ["Banco", "TipoCredito", "Tasa"] if c in df_tasas.columns]
+        if cols:
+            tasas_resumen = df_tasas[cols].head(12).to_dict(orient="records")
 
     contexto = {
         "titulares_chile": resumen_noticias,
-        "ejemplo_tasas": top_tasas,
+        "tasas_hipotecarias": tasas_resumen,
         "uf_hoy_aprox": uf_valor,
     }
 
-    system_prompt = """
-Eres un analista inmobiliario y financiero senior en Chile.
+    system_prompt = (
+        "Eres un analista inmobiliario y financiero senior en Chile.\n"
+        + CHILE_CONTEXT
+        + """
 Tu audiencia son brokers inmobiliarios que venden proyectos nuevos y departamentos.
 
 Con base en:
 - Noticias recientes del mercado chileno.
-- Tasas de créditos hipotecarios por banco (CMF).
+- Tasas de créditos hipotecarios por banco (SBIF).
 - Nivel actual de la UF.
 
 Debes entregar SIEMPRE:
@@ -659,20 +721,23 @@ Debes entregar SIEMPRE:
    - Inversionistas que compran para renta.
    - Compradores de primera vivienda.
 3) Estrategias de venta recomendadas para brokers (argumentos concretos).
-4) Riesgos a mencionar con cuidado (tasa alta, plazos, endeudamiento, etc.).
-5) Oportunidades tácticas (por comunas, tickets, tipo de unidad, plazo, etc.).
+4) Riesgos a mencionar con cuidado (tasa alta, plazos, endeudamiento, comunas riesgosas).
+5) Oportunidades tácticas (por comunas recomendables, tickets, tipo de unidad, plazo, etc.).
 
 Usa lenguaje claro, profesional, en español chileno.
+No inventes cifras específicas si no aparecen en el contexto, pero sí puedes interpretar tendencias.
 """
+    )
 
     user_prompt = f"""
-CONTEXT0 ESTRUCTURADO (JSON):
+CONTEXTO ESTRUCTURADO (JSON):
 
 {json.dumps(contexto, ensure_ascii=False)[:11000]}
 
 TAREA:
 - Analiza este contexto y entrega los 5 bloques solicitados.
 - No repitas el JSON. Solo responde en texto bien estructurado, con subtítulos y bullets.
+- Evita recomendar comunas que el contexto marque como riesgosas.
 """
 
     resp = client.chat.completions.create(
@@ -1016,7 +1081,7 @@ def show_noticias_tasas():
     st.header("📰 Noticias & Tasas (Chile)")
 
     tab1, tab2, tab3 = st.tabs(
-        ["Noticias inmobiliarias", "Tasas hipotecarias (CMF)", "Insights IA mercado"]
+        ["Noticias inmobiliarias", "Tasas hipotecarias (SBIF)", "Insights IA mercado"]
     )
 
     # UF actual para contexto
@@ -1034,7 +1099,7 @@ def show_noticias_tasas():
 
         if not noticias:
             st.info(
-                "No se pudieron leer noticias desde las fuentes configuradas. "
+                "No se encontraron noticias inmobiliarias recientes desde las fuentes configuradas. "
                 "Revisa las URLs RSS en la sección Configuración."
             )
         else:
@@ -1054,21 +1119,25 @@ def show_noticias_tasas():
                 st.markdown("---")
 
     with tab2:
-        st.subheader("Tasas de créditos hipotecarios (CMF Chile)")
+        st.subheader("Tasas de créditos hipotecarios (SBIF Chile)")
 
-        rows, headers = fetch_cmf_tasas()
+        df_tasas, error = fetch_sbif_tasas()
 
-        if not rows:
+        if error:
             st.info(
-                "No se pudieron obtener las tasas desde la CMF. "
-                "Puede ser un cambio en la página o un problema de conexión."
+                f"No se pudieron obtener las tasas desde SBIF: {error}. "
+                "Verifica tu SBIF_API_KEY y la conectividad."
+            )
+        elif df_tasas is None or df_tasas.empty:
+            st.info(
+                "La API SBIF no devolvió información de tasas. "
+                "Podría ser un cambio en el servicio o falta de datos para el año actual."
             )
         else:
-            # Mostrar tasa promedio mercado (aprox)
-            tasa_prom = compute_tasa_promedio_mercado(rows)
+            tasa_prom = compute_tasa_promedio_sbif(df_tasas)
             if tasa_prom is not None:
                 st.metric(
-                    "Tasa fija promedio (mercado, aproximada)",
+                    "Tasa promedio referencial (aprox.)",
                     f"{tasa_prom:.2f} %",
                 )
 
@@ -1078,15 +1147,10 @@ def show_noticias_tasas():
                     .replace(",", ".")
                 )
 
-            st.markdown("### Tabla resumen (directo desde CMF)")
-
-            # Convertir filas a DataFrame para mejor visualización
-            df_tasas = pd.DataFrame(rows)
+            st.markdown("### Tabla de tasas por banco/tipo")
             st.dataframe(df_tasas, use_container_width=True)
-
             st.caption(
-                "Origen: Comisión para el Mercado Financiero (CMF). "
-                "Los nombres de columnas pueden variar según la publicación oficial."
+                "Origen: SBIF (vía API). Columnas y contenido sujetos a la publicación oficial."
             )
 
     with tab3:
@@ -1094,9 +1158,9 @@ def show_noticias_tasas():
 
         fuentes = st.session_state.news_sources
         noticias = fetch_chile_news(fuentes)
-        rows, headers = fetch_cmf_tasas()
+        df_tasas, error = fetch_sbif_tasas()
 
-        if not noticias and not rows:
+        if (not noticias) and (df_tasas is None or df_tasas.empty):
             st.info(
                 "No hay suficientes datos de noticias o tasas para generar insights. "
                 "Revisa la conexión y las fuentes configuradas."
@@ -1104,7 +1168,7 @@ def show_noticias_tasas():
         else:
             if st.button("🧠 Generar insights IA del mercado"):
                 with st.spinner("Analizando mercado, noticias y tasas..."):
-                    texto = ia_insights_mercado(noticias, rows, uf_valor)
+                    texto = ia_insights_mercado(noticias or [], df_tasas, uf_valor)
                 if texto:
                     st.markdown(texto)
 
