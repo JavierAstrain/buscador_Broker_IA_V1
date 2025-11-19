@@ -5,55 +5,19 @@ from io import StringIO
 import altair as alt
 import requests
 from datetime import datetime
+
 from openai import OpenAI
-import base64
 
-# -------------------------------------------------------
+# =========================
 # CONFIGURACIÓN GENERAL
-# -------------------------------------------------------
-
+# =========================
 st.set_page_config(
     page_title="Broker IA",
     page_icon="🏙️",
     layout="wide",
 )
 
-# -------------------------------------------------------
-# CONTEXTO EXPERTO CHILE (para IA)
-# -------------------------------------------------------
-
-CHILE_CONTEXT = """
-Eres un analista inmobiliario chileno experto (años 2023–2025). Usa este conocimiento SIEMPRE:
-
-🔵 Comunas con plusvalía estable o creciente:
-- Ñuñoa, Providencia, Macul, San Miguel, La Florida (zonas conectadas)
-- Las Condes, Vitacura, Lo Barnechea (alto estándar)
-- Independencia y Recoleta (ejes conectados)
-
-🔴 Comunas de riesgo:
-- Estación Central: sobreoferta, micro-unidades, baja plusvalía.
-- Santiago Centro: sectores saturados, vacancia alta.
-- Evitar micro-unidades < 25–28 m2.
-
-📈 Tendencias Chile 2023–2025:
-- Tasas hipotecarias bajando levemente.
-- Fuerte demanda de arriendo.
-- Renta estable en zonas conectadas (Metro).
-- Entrega inmediata muy atractiva para inversionistas.
-- Unidades 2D/2B → mejor equilibrio para renta y reventa.
-
-📉 Evitar recomendar:
-- Proyectos densos, mala habitabilidad.
-- Zonas de riesgo delictual fuerte.
-- Micro-unidades poco revendibles.
-
-Siempre responde con datos reales, tono profesional y lógica del mercado chileno.
-"""
-
-# -------------------------------------------------------
-# ESTADO DE SESIÓN
-# -------------------------------------------------------
-
+# ---------- Helpers de sesión ----------
 def init_session_state():
     if "df" not in st.session_state:
         st.session_state.df = pd.DataFrame()
@@ -64,11 +28,11 @@ def init_session_state():
     if "client_profile" not in st.session_state:
         st.session_state.client_profile = {
             "nombre_cliente": "",
-            "objetivo": "Inversión",
+            "objetivo": "Primera vivienda",
             "rango_uf": (1500, 15000),
-            "dorms_min": 1,
+            "dorms_min": 2,
             "banos_min": 1,
-            "rango_m2": (25, 120),
+            "rango_m2": (30, 120),
             "comunas": [],
             "etapas": [],
             "anos": [],
@@ -76,66 +40,84 @@ def init_session_state():
             "comentarios": "",
         }
 
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
-
     if "last_recommendations" not in st.session_state:
         st.session_state.last_recommendations = None
 
-    # Tema UI
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    # Tema visual personalizable
     if "theme" not in st.session_state:
         st.session_state.theme = {
-            "primary_color": "#2563EB",
-            "secondary_color": "#0F172A",
-            "bg_color": "#F8FAFC",
+            "primary_color": "#2563EB",   # Azul
+            "secondary_color": "#0F172A", # Sidebar oscuro
+            "bg_color": "#F8FAFC",        # Fondo claro
         }
 
-    # Fuentes de noticias Chile
+    # Fuentes RSS de noticias chilenas (configurables)
     if "news_sources" not in st.session_state:
         st.session_state.news_sources = [
-            "https://www.df.cl/rss",
-            "https://www.latercera.com/rss/",
-            "https://www.elmostrador.cl/feed/",
+            "https://www.df.cl/rss",             # Diario Financiero (puede ajustarse)
+            "https://www.latercera.com/rss/",   # La Tercera
+            "https://www.elmostrador.cl/feed/", # El Mostrador
         ]
 
-init_session_state()
-
-# -------------------------------------------------------
-# CSS PERSONALIZADO
-# -------------------------------------------------------
 
 def inject_custom_css():
+    """Aplica colores elegidos por el usuario a la app."""
     theme = st.session_state.theme
+    primary = theme["primary_color"]
+    secondary = theme["secondary_color"]
+    bg = theme["bg_color"]
+
     st.markdown(
-        f"""
+        """
         <style>
-        .stApp {{
-            background-color: {theme['bg_color']};
-        }}
-        section[data-testid="stSidebar"] > div {{
-            background-color: {theme['secondary_color']};
-        }}
-        section[data-testid="stSidebar"] * {{
+        .stApp {
+            background-color: %s;
+        }
+        section[data-testid="stSidebar"] > div {
+            background-color: %s;
+        }
+        section[data-testid="stSidebar"] * {
             color: #E5E7EB !important;
-        }}
-        .stButton > button {{
-            background-color: {theme['primary_color']};
+        }
+        .stButton > button, .stDownloadButton > button {
+            background-color: %s;
+            border-color: %s;
             color: white;
-            border-radius: 8px;
-        }}
-        .stButton > button:hover {{
+        }
+        .stButton > button:hover, .stDownloadButton > button:hover {
             opacity: 0.9;
-        }}
+        }
+        h1, h2, h3, h4 {
+            color: #0F172A;
+        }
         </style>
-        """,
+        """
+        % (bg, secondary, primary, primary),
         unsafe_allow_html=True,
     )
 
+
+init_session_state()
 inject_custom_css()
 
-# -------------------------------------------------------
-# UTILIDADES DE COLUMNAS Y PLANILLAS
-# -------------------------------------------------------
+# =========================
+# UTILIDADES
+# =========================
+
+@st.cache_data
+def load_sheet_from_google(csv_url):
+    df = pd.read_csv(csv_url)
+    return df
+
+
+def get_default_sheet():
+    sheet_base = "https://docs.google.com/spreadsheets/d/1PLYS284AMaw8XukpR1107BAkbYDHvO8ARzhllzmwEjY"
+    csv_url = "%s/export?format=csv&gid=0" % sheet_base
+    return load_sheet_from_google(csv_url)
+
 
 def normalize_name(name):
     return (
@@ -150,56 +132,607 @@ def normalize_name(name):
         .replace("ñ", "n")
     )
 
-def find_column(df, names):
-    norm_map = {normalize_name(c): c for c in df.columns}
-    for name in names:
-        if name in norm_map:
-            return norm_map[name]
+
+def find_column(df, logical_names):
+    """Devuelve el nombre real de la columna o None."""
+    norm_to_real = {normalize_name(c): c for c in df.columns}
+    for ln in logical_names:
+        if ln in norm_to_real:
+            return norm_to_real[ln]
     return None
 
+
 def map_columns(df):
-    return {
-        "nombre_proyecto": find_column(df, ["proyecto", "nombre_proyecto"]),
+    """Detecta las columnas más importantes de la planilla."""
+    column_map = {
+        "nombre_proyecto": find_column(df, ["nombre_proyecto", "proyecto", "nombre_del_proyecto"]),
         "comuna": find_column(df, ["comuna"]),
-        "tipo_unidad": find_column(df, ["tipo_unidad", "tipologia", "tipo"]),
-        "dormitorios": find_column(df, ["dormitorios", "n_dormitorios"]),
-        "banos": find_column(df, ["banos", "baños", "n_banos"]),
-        "superficie_total_m2": find_column(df, ["superficie_total_m2", "m2", "superficie"]),
-        "precio_uf_desde": find_column(df, ["precio_uf_desde", "precio_desde_uf"]),
-        "precio_uf_hasta": find_column(df, ["precio_uf_hasta", "precio_hasta_uf"]),
+        "tipo_unidad": find_column(df, ["tipo_unidad", "tipologia", "tipo_de_unidad", "tipo"]),
+        "dormitorios": find_column(df, ["dormitorios", "dorms", "n_dormitorios", "num_dormitorios"]),
+        "banos": find_column(df, ["banos", "baños", "bano", "n_banos", "num_banos"]),
+        "superficie_total_m2": find_column(
+            df,
+            [
+                "superficie_total_m2",
+                "sup_total_m2",
+                "superficie_total",
+                "superficie_m2",
+                "m2",
+                "sup_total",
+            ],
+        ),
+        "precio_uf_desde": find_column(
+            df,
+            [
+                "precio_uf_desde",
+                "precio_desde_uf",
+                "precio_desde_en_uf",
+                "precio_uf",
+                "precio_lista_uf",
+            ],
+        ),
+        "precio_uf_hasta": find_column(
+            df,
+            ["precio_uf_hasta", "precio_hasta_uf", "precio_hasta_en_uf"],
+        ),
         "etapa": find_column(df, ["etapa"]),
-        "ano_entrega_estimada": find_column(df, ["ano_entrega", "anio_entrega"]),
-        "estado_comercial": find_column(df, ["estado", "estado_comercial"]),
-        "url_portal": find_column(df, ["url", "link", "url_proyecto"]),
+        "ano_entrega_estimada": find_column(
+            df, ["ano_entrega_estimada", "anio_entrega", "ano_entrega", "ano"]
+        ),
+        "trimestre_entrega_estimada": find_column(
+            df, ["trimestre_entrega_estimada", "trimestre_entrega"]
+        ),
+        "estado_comercial": find_column(df, ["estado_comercial", "estado_proyecto", "estado"]),
+        "url_portal": find_column(df, ["url_portal", "url_proyecto", "url", "link_portal"]),
     }
+    return column_map
 
-@st.cache_data
-def load_sheet(url):
-    return pd.read_csv(url)
-
-def get_example_sheet():
-    base = "https://docs.google.com/spreadsheets/d/1PLYS284AMaw8XukpR1107BAkbYDHvO8ARzhllzmwEjY"
-    return load_sheet(f"{base}/export?format=csv&gid=0")
-
-def _ensure_numeric(df, col):
-    if col in df.columns:
-        serie = df[col].astype(str).str.replace(r"[^\d\.\-]", "", regex=True)
-        return pd.to_numeric(serie, errors="coerce")
-    return pd.Series([pd.NA] * len(df))
 
 def get_openai_client():
-    key = st.secrets.get("OPENAI_API_KEY", None)
-    if not key:
-        st.error("Falta OPENAI_API_KEY en st.secrets")
+    api_key = st.secrets.get("OPENAI_API_KEY", None)
+    if not api_key:
+        st.error("⚠️ Falta configurar OPENAI_API_KEY en st.secrets.")
         return None
-    return OpenAI(api_key=key)
+    return OpenAI(api_key=api_key)
 
-# -------------------------------------------------------
-# DASHBOARD PROFESIONAL
-# -------------------------------------------------------
+
+def _ensure_numeric(df, col):
+    """
+    Convierte una columna a numérico de forma segura.
+    Si la columna no existe, devuelve una serie llena de NaN.
+    """
+    if col and col in df.columns:
+        serie = (
+            df[col]
+            .astype(str)
+            .str.replace(r"[^\d\.\-]", "", regex=True)
+        )
+        return pd.to_numeric(serie, errors="coerce")
+    else:
+        return pd.Series([pd.NA] * len(df), index=df.index)
+
+
+def get_filtered_df():
+    """Aplica filtros basados en el perfil del cliente."""
+    df = st.session_state.df
+    cm = st.session_state.column_map
+    cp = st.session_state.client_profile
+
+    if df.empty:
+        return df
+
+    df_out = df.copy()
+
+    col_precio_desde = cm.get("precio_uf_desde")
+    col_dorms = cm.get("dormitorios")
+    col_banos = cm.get("banos")
+    col_sup_total = cm.get("superficie_total_m2")
+    col_ano = cm.get("ano_entrega_estimada")
+
+    if col_precio_desde:
+        df_out[col_precio_desde] = _ensure_numeric(df_out, col_precio_desde)
+    if col_dorms:
+        df_out[col_dorms] = _ensure_numeric(df_out, col_dorms)
+    if col_banos:
+        df_out[col_banos] = _ensure_numeric(df_out, col_banos)
+    if col_sup_total:
+        df_out[col_sup_total] = _ensure_numeric(df_out, col_sup_total)
+    if col_ano:
+        df_out[col_ano] = _ensure_numeric(df_out, col_ano)
+
+    if col_precio_desde:
+        df_out = df_out.dropna(subset=[col_precio_desde])
+
+    if col_precio_desde and col_precio_desde in df_out.columns:
+        df_out = df_out[
+            df_out[col_precio_desde].between(
+                float(cp["rango_uf"][0]),
+                float(cp["rango_uf"][1]),
+                inclusive="both",
+            )
+        ]
+
+    if col_dorms and col_dorms in df_out.columns:
+        df_out = df_out[df_out[col_dorms] >= float(cp["dorms_min"])]
+
+    if col_banos and col_banos in df_out.columns:
+        df_out = df_out[df_out[col_banos] >= float(cp["banos_min"])]
+
+    if col_sup_total and col_sup_total in df_out.columns:
+        df_out = df_out[
+            df_out[col_sup_total].between(
+                float(cp["rango_m2"][0]),
+                float(cp["rango_m2"][1]),
+                inclusive="both",
+            )
+        ]
+
+    col_comuna = cm.get("comuna")
+    if col_comuna and cp["comunas"]:
+        df_out = df_out[df_out[col_comuna].isin(cp["comunas"])]
+
+    col_etapa = cm.get("etapa")
+    if col_etapa and cp["etapas"]:
+        df_out = df_out[df_out[col_etapa].isin(cp["etapas"])]
+
+    col_estado = cm.get("estado_comercial")
+    if col_estado and cp["estados"]:
+        df_out = df_out[df_out[col_estado].isin(cp["estados"])]
+
+    if col_ano and col_ano in df_out.columns and cp["anos"]:
+        anos_target = [int(float(a)) for a in cp["anos"]]
+        df_out = df_out[df_out[col_ano].isin(anos_target)]
+
+    return df_out
+
+
+def build_client_profile_text():
+    cp = st.session_state.client_profile
+    texto = "Objetivo del cliente: %s.\n" % cp["objetivo"]
+    if cp["nombre_cliente"]:
+        texto += "Nombre del cliente: %s.\n" % cp["nombre_cliente"]
+    texto += "Rango de precio en UF: %s - %s.\n" % (cp["rango_uf"][0], cp["rango_uf"][1])
+    texto += "Dormitorios mínimos: %s. Baños mínimos: %s.\n" % (
+        cp["dorms_min"],
+        cp["banos_min"],
+    )
+    texto += "Rango de superficie total: %s - %s m2.\n" % (
+        cp["rango_m2"][0],
+        cp["rango_m2"][1],
+    )
+    if cp["comunas"]:
+        texto += "Comunas preferidas: %s.\n" % ", ".join(map(str, cp["comunas"]))
+    if cp["etapas"]:
+        texto += "Etapas preferidas: %s.\n" % ", ".join(map(str, cp["etapas"]))
+    if cp["anos"]:
+        texto += "Años de entrega estimados: %s.\n" % ", ".join(map(str, cp["anos"]))
+    if cp["estados"]:
+        texto += "Estados comerciales preferidos: %s.\n" % ", ".join(map(str, cp["estados"]))
+    if cp["comentarios"]:
+        texto += "Notas adicionales del broker: %s\n" % cp["comentarios"]
+    return texto
+
+
+def prepare_properties_for_ai(df_props, max_props=50):
+    cm = st.session_state.column_map
+    df_short = df_props.reset_index(drop=True).head(max_props)
+    props = []
+
+    for idx, row in df_short.iterrows():
+        prop = {"id_interno": int(idx)}
+        for key, col in cm.items():
+            if col and col in row:
+                value = row[col]
+                if pd.isna(value):
+                    value = ""
+                prop[key] = value
+        props.append(prop)
+
+    return props
+
+
+# =========================
+# UF EN LÍNEA (FOOTER)
+# =========================
+
+@st.cache_data(ttl=3600)
+def get_uf_value():
+    """Consulta la UF en CLP desde mindicador.cl."""
+    try:
+        resp = requests.get("https://mindicador.cl/api/uf", timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            serie = data.get("serie", [])
+            if serie:
+                valor = float(serie[0]["valor"])
+                fecha = serie[0]["fecha"]
+                return valor, fecha
+    except Exception:
+        return None, None
+    return None, None
+
+
+def show_uf_footer():
+    st.markdown("---")
+    uf_valor, uf_fecha = get_uf_value()
+    if uf_valor:
+        fecha_str = uf_fecha[:10]
+        try:
+            fecha_dt = datetime.fromisoformat(fecha_str)
+            fecha_str = fecha_dt.strftime("%d-%m-%Y")
+        except Exception:
+            pass
+        texto = "💱 Referencia UF hoy: 1 UF ≈ ${:,.0f} CLP (mindicador.cl, {})".format(
+            uf_valor, fecha_str
+        )
+        st.caption(texto.replace(",", "."))
+    else:
+        st.caption(
+            "💱 No se pudo obtener el valor actual de la UF. Revisa tu conexión o inténtalo más tarde."
+        )
+
+
+# =========================
+# IA: RECOMENDACIONES Y CHAT
+# =========================
+
+def ia_recomendaciones(client_profile, properties, top_k=5):
+    client = get_openai_client()
+    if client is None:
+        return None
+
+    system_prompt = """
+Eres un asesor inmobiliario senior en Chile, experto en proyectos nuevos.
+Analizas el perfil del cliente y una lista de propiedades.
+Objetivo:
+
+1. Seleccionar las mejores propiedades para ese cliente.
+2. Explicar por qué son buenas opciones.
+3. Dar argumentos comerciales concretos para que el broker cierre la venta.
+4. Proponer una estrategia general de inversión (renta, plusvalía, portafolio, etc.).
+
+RESPUESTA OBLIGATORIA EN FORMATO JSON:
+
+{
+  "recomendaciones": [
+    {
+      "id_interno": <numero>,
+      "score": <numero 1-10>,
+      "motivo_principal": "<texto>",
+      "argumentos_venta": ["<bullet1>", "<bullet2>", "<bullet3>"]
+    }
+  ],
+  "estrategia_general": "<texto explicando la estrategia inmobiliaria para este cliente>"
+}
+"""
+
+    user_prompt = """
+PERFIL DEL CLIENTE:
+%s
+
+PROPIEDADES DISPONIBLES (JSON):
+%s
+
+TAREA:
+- Elige las %s mejores propiedades.
+- Devuelve el JSON EXACTAMENTE con la forma indicada.
+""" % (
+        client_profile,
+        json.dumps(properties, ensure_ascii=False),
+        top_k,
+    )
+
+    resp = client.chat.completions.create(
+        model="gpt-4.1",
+        messages=[
+            {"role": "system", "content": system_prompt.strip()},
+            {"role": "user", "content": user_prompt.strip()},
+        ],
+        temperature=0.4,
+    )
+
+    content = resp.choices[0].message.content
+
+    try:
+        data = json.loads(content)
+    except Exception:
+        try:
+            start = content.index("{")
+            end = content.rindex("}") + 1
+            data = json.loads(content[start:end])
+        except Exception:
+            st.error("No pude interpretar la respuesta de la IA como JSON.")
+            st.code(content)
+            return None
+
+    return data
+
+
+def ia_chat_libre(mensaje_usuario):
+    client = get_openai_client()
+    if client is None:
+        return None
+
+    df_filtrado = get_filtered_df()
+    props_list = prepare_properties_for_ai(df_filtrado, max_props=40)
+    perfil_texto = build_client_profile_text()
+
+    system_prompt = """
+Eres un asesor inmobiliario y de inversiones experto en Chile.
+Tienes:
+- Perfil del cliente.
+- Lista de propiedades nuevas filtradas.
+- Historial de conversación con un broker.
+
+Objetivo:
+- Dar respuestas claras, accionables y profesionales.
+- Recomendar comunas, tipos de unidades, estrategias (renta, plusvalía, portafolio).
+- Usar UF y CLP, realidad chilena y lenguaje cercano pero profesional.
+"""
+
+    context = {
+        "perfil_cliente": perfil_texto,
+        "propiedades_resumen": props_list,
+    }
+
+    messages = [{"role": "system", "content": system_prompt.strip()}]
+
+    messages.append(
+        {
+            "role": "user",
+            "content": "Contexto inicial (no responder todavía, solo incorpora): "
+            + json.dumps(context, ensure_ascii=False)[:11000],
+        }
+    )
+    messages.append(
+        {
+            "role": "assistant",
+            "content": "Contexto recibido. Ahora esperaré las preguntas del broker.",
+        }
+    )
+
+    for m in st.session_state.chat_history:
+        messages.append({"role": m["role"], "content": m["content"]})
+
+    messages.append({"role": "user", "content": mensaje_usuario})
+
+    resp = client.chat.completions.create(
+        model="gpt-4.1",
+        messages=messages,
+        temperature=0.5,
+    )
+
+    return resp.choices[0].message.content
+
+
+# =========================
+# NOTICIAS & TASAS (CHILE)
+# =========================
+
+@st.cache_data(ttl=1800)
+def fetch_chile_news(sources):
+    """
+    Lee noticias desde una lista de RSS (fuentes chilenas).
+    Retorna lista de dicts: {titulo, resumen, link, fuente, fecha}
+    """
+    try:
+        import feedparser
+    except ImportError:
+        st.error("Falta el paquete 'feedparser'. Añade 'feedparser' a requirements.txt.")
+        return []
+
+    noticias = []
+    for url in sources:
+        try:
+            feed = feedparser.parse(url)
+            fuente = feed.feed.title if hasattr(feed, "feed") and "title" in feed.feed else url
+            for entry in feed.entries[:5]:
+                titulo = getattr(entry, "title", "").strip()
+                resumen = getattr(entry, "summary", "").strip()
+                link = getattr(entry, "link", "").strip()
+                fecha = getattr(entry, "published", "") or getattr(entry, "updated", "")
+                if titulo:
+                    noticias.append(
+                        {
+                            "titulo": titulo,
+                            "resumen": resumen,
+                            "link": link,
+                            "fuente": fuente,
+                            "fecha": fecha,
+                        }
+                    )
+        except Exception:
+            continue
+
+    return noticias
+
+
+@st.cache_data(ttl=43200)
+def fetch_cmf_tasas():
+    """
+    Obtiene tabla de tasas hipotecarias desde CMF (scraping liviano).
+    Retorna: (rows, headers)
+    rows: lista de dicts
+    headers: lista de nombres de columnas
+    """
+    url = "https://www.cmfchile.cl/institucional/mercados/tasas_creditos_hipotecarios.php"
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        st.error("Falta el paquete 'beautifulsoup4'. Añade 'beautifulsoup4' a requirements.txt.")
+        return [], []
+
+    try:
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return [], []
+        html = resp.text
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Tomar la primera tabla de datos relevante
+        table = soup.find("table")
+        if table is None:
+            return [], []
+
+        # Encabezados
+        header_cells = table.find("tr").find_all(["th", "td"])
+        headers = [h.get_text(strip=True) for h in header_cells]
+
+        rows = []
+        for tr in table.find_all("tr")[1:]:
+            cells = tr.find_all("td")
+            if not cells:
+                continue
+            values = [c.get_text(strip=True) for c in cells]
+            if len(values) != len(headers):
+                # Alinear por si acaso
+                values = values + [""] * (len(headers) - len(values))
+            row_dict = dict(zip(headers, values))
+            rows.append(row_dict)
+
+        return rows, headers
+    except Exception:
+        return [], []
+
+
+def compute_tasa_promedio_mercado(rows):
+    """
+    Calcula una tasa promedio de mercado a partir de columnas que contengan 'Fija'.
+    Devuelve float o None.
+    """
+    if not rows:
+        return None
+
+    tasas = []
+    for r in rows:
+        for k, v in r.items():
+            if "fija" in k.lower():
+                txt = v.replace("%", "").replace(",", ".").strip()
+                try:
+                    val = float(txt)
+                    tasas.append(val)
+                except Exception:
+                    pass
+                break
+
+    if not tasas:
+        return None
+
+    return sum(tasas) / len(tasas)
+
+
+def ia_insights_mercado(noticias, tasas_rows, uf_valor):
+    """
+    IA que combina noticias + tasas hipotecarias + UF para dar insights de mercado.
+    """
+    client = get_openai_client()
+    if client is None:
+        return None
+
+    # Compactar contexto
+    top_news = noticias[:8]
+    resumen_noticias = [
+        f"- {n['titulo']} ({n['fuente']})"
+        for n in top_news
+    ]
+
+    top_tasas = tasas_rows[:10]
+
+    contexto = {
+        "titulares_chile": resumen_noticias,
+        "ejemplo_tasas": top_tasas,
+        "uf_hoy_aprox": uf_valor,
+    }
+
+    system_prompt = """
+Eres un analista inmobiliario y financiero senior en Chile.
+Tu audiencia son brokers inmobiliarios que venden proyectos nuevos y departamentos.
+
+Con base en:
+- Noticias recientes del mercado chileno.
+- Tasas de créditos hipotecarios por banco (CMF).
+- Nivel actual de la UF.
+
+Debes entregar SIEMPRE:
+1) Un resumen ejecutivo del mercado hoy.
+2) Cómo las tasas actuales afectan:
+   - Inversionistas que compran para renta.
+   - Compradores de primera vivienda.
+3) Estrategias de venta recomendadas para brokers (argumentos concretos).
+4) Riesgos a mencionar con cuidado (tasa alta, plazos, endeudamiento, etc.).
+5) Oportunidades tácticas (por comunas, tickets, tipo de unidad, plazo, etc.).
+
+Usa lenguaje claro, profesional, en español chileno.
+"""
+
+    user_prompt = f"""
+CONTEXT0 ESTRUCTURADO (JSON):
+
+{json.dumps(contexto, ensure_ascii=False)[:11000]}
+
+TAREA:
+- Analiza este contexto y entrega los 5 bloques solicitados.
+- No repitas el JSON. Solo responde en texto bien estructurado, con subtítulos y bullets.
+"""
+
+    resp = client.chat.completions.create(
+        model="gpt-4.1",
+        messages=[
+            {"role": "system", "content": system_prompt.strip()},
+            {"role": "user", "content": user_prompt.strip()},
+        ],
+        temperature=0.5,
+    )
+
+    return resp.choices[0].message.content
+
+
+# =========================
+# VISTAS (DERECHA)
+# =========================
+
+def show_fuente_propiedades():
+    st.header("📂 Fuente de propiedades")
+
+    st.markdown(
+        "Configura desde dónde se cargan las propiedades que Broker IA utilizará "
+        "para analizar y recomendar proyectos."
+    )
+
+    fuente = st.radio(
+        "Selecciona la fuente de datos",
+        ["Planilla de ejemplo (Google Sheets)", "Subir archivo (Excel/CSV)"],
+    )
+
+    if fuente == "Planilla de ejemplo (Google Sheets)":
+        if st.button("Cargar planilla de ejemplo"):
+            df = get_default_sheet()
+            st.session_state.df = df
+            st.session_state.column_map = map_columns(df)
+            st.success("Planilla de ejemplo cargada correctamente.")
+    else:
+        archivo = st.file_uploader("Sube un archivo Excel o CSV", type=["xlsx", "xls", "csv"])
+        if archivo is not None:
+            if archivo.name.endswith(".csv"):
+                df = pd.read_csv(archivo)
+            else:
+                df = pd.read_excel(archivo)
+            st.session_state.df = df
+            st.session_state.column_map = map_columns(df)
+            st.success("Archivo cargado correctamente.")
+
+    if not st.session_state.df.empty:
+        st.subheader("Vista rápida de la planilla")
+        st.dataframe(st.session_state.df.head(10))
+
+        st.subheader("Columnas detectadas")
+        st.json(st.session_state.column_map)
+    else:
+        st.info("Aún no se han cargado propiedades. Usa una de las opciones de arriba.")
+
 
 def show_dashboard():
-    st.header("📊 Dashboard de Propiedades")
+    st.header("📊 Dashboard de propiedades")
 
     df = st.session_state.df
     cm = st.session_state.column_map
@@ -210,7 +743,6 @@ def show_dashboard():
 
     df_dash = df.copy()
 
-    # Columnas mapeadas
     col_precio_desde = cm.get("precio_uf_desde")
     col_precio_hasta = cm.get("precio_uf_hasta")
     col_sup = cm.get("superficie_total_m2")
@@ -220,1068 +752,918 @@ def show_dashboard():
     col_banos = cm.get("banos")
     col_ano = cm.get("ano_entrega_estimada")
 
-    # Convertir a numérico
-    if col_precio_desde:
+    # --- Limpieza numérica ---
+    if col_precio_desde and col_precio_desde in df_dash.columns:
         df_dash[col_precio_desde] = _ensure_numeric(df_dash, col_precio_desde)
-    if col_precio_hasta:
+    if col_precio_hasta and col_precio_hasta in df_dash.columns:
         df_dash[col_precio_hasta] = _ensure_numeric(df_dash, col_precio_hasta)
-    if col_sup:
+    if col_sup and col_sup in df_dash.columns:
         df_dash[col_sup] = _ensure_numeric(df_dash, col_sup)
 
-    # Precio promedio UF
-    if col_precio_desde:
-        if col_precio_hasta:
+    # Precio UF promedio
+    if col_precio_desde and col_precio_desde in df_dash.columns:
+        if col_precio_hasta and col_precio_hasta in df_dash.columns:
             df_dash["precio_uf_promedio"] = (
                 df_dash[col_precio_desde] + df_dash[col_precio_hasta]
             ) / 2
         else:
             df_dash["precio_uf_promedio"] = df_dash[col_precio_desde]
     else:
-        st.error("No se encontró columna de precio en UF.")
+        st.error("No se detectó columna de precio en UF. Revisa el mapeo de columnas.")
         return
 
-    # Precio por m2
-    if col_sup:
+    if col_sup and col_sup in df_dash.columns:
         df_dash["precio_uf_m2"] = df_dash["precio_uf_promedio"] / df_dash[col_sup]
     else:
         df_dash["precio_uf_m2"] = None
 
-    # ------------------------------
-    # FILTROS
-    # ------------------------------
-    with st.expander("🎛️ Filtros del Dashboard", expanded=True):
+    # ---------------- Filtros ----------------
+    with st.expander("🎛️ Filtros del dashboard", expanded=True):
         uf_min = int(df_dash["precio_uf_promedio"].min())
         uf_max = int(df_dash["precio_uf_promedio"].max())
-
-        rango_uf = st.slider(
-            "Rango de precio UF (promedio)",
+        rango_uf_dash = st.slider(
+            "Rango de precio (UF, promedio)",
             min_value=uf_min,
             max_value=uf_max,
             value=(uf_min, uf_max),
         )
 
-        if col_comuna:
-            comunas = sorted(df_dash[col_comuna].dropna().unique())
-            comunas_sel = st.multiselect("Comunas", comunas, default=comunas)
+        if col_comuna and col_comuna in df_dash.columns:
+            comunas_disp = sorted(df_dash[col_comuna].dropna().unique())
+            comunas_sel = st.multiselect(
+                "Comunas",
+                comunas_disp,
+                default=comunas_disp,
+            )
         else:
             comunas_sel = []
 
-        if col_tipo:
-            tipos = sorted(df_dash[col_tipo].dropna().unique())
-            tipos_sel = st.multiselect("Tipo Unidad", tipos, default=tipos)
+        if col_tipo and col_tipo in df_dash.columns:
+            tipos_disp = sorted(df_dash[col_tipo].dropna().unique())
+            tipos_sel = st.multiselect(
+                "Tipo de unidad",
+                tipos_disp,
+                default=tipos_disp,
+            )
         else:
             tipos_sel = []
 
-        if col_dorms:
+        if col_dorms and col_dorms in df_dash.columns:
             df_dash[col_dorms] = _ensure_numeric(df_dash, col_dorms)
+            min_d = int(df_dash[col_dorms].min())
+            max_d = int(df_dash[col_dorms].max())
             rango_dorms = st.slider(
                 "Dormitorios",
-                int(df_dash[col_dorms].min()),
-                int(df_dash[col_dorms].max()),
-                value=(int(df_dash[col_dorms].min()), int(df_dash[col_dorms].max())),
+                min_value=min_d,
+                max_value=max_d,
+                value=(min_d, max_d),
             )
         else:
             rango_dorms = None
 
-        if col_banos:
+        if col_banos and col_banos in df_dash.columns:
             df_dash[col_banos] = _ensure_numeric(df_dash, col_banos)
+            min_b = int(df_dash[col_banos].min())
+            max_b = int(df_dash[col_banos].max())
             rango_banos = st.slider(
                 "Baños",
-                int(df_dash[col_banos].min()),
-                int(df_dash[col_banos].max()),
-                value=(int(df_dash[col_banos].min()), int(df_dash[col_banos].max())),
+                min_value=min_b,
+                max_value=max_b,
+                value=(min_b, max_b),
             )
         else:
             rango_banos = None
 
-        if col_ano:
+        if col_ano and col_ano in df_dash.columns:
             df_dash[col_ano] = _ensure_numeric(df_dash, col_ano)
-            anos = sorted(df_dash[col_ano].dropna().unique())
-            anos_sel = st.multiselect("Año entrega estimada", anos, default=anos)
+            anos_disp = sorted(df_dash[col_ano].dropna().unique())
+            anos_sel = st.multiselect(
+                "Año de entrega estimada",
+                anos_disp,
+                default=anos_disp,
+            )
         else:
             anos_sel = []
 
-    # ------------------------------
-    # APLICAR FILTROS
-    # ------------------------------
-    mask = df_dash["precio_uf_promedio"].between(rango_uf[0], rango_uf[1])
+    # Aplicar filtros
+    mask = df_dash["precio_uf_promedio"].between(
+        rango_uf_dash[0],
+        rango_uf_dash[1],
+    )
 
-    if comunas_sel and col_comuna:
+    if comunas_sel and col_comuna and col_comuna in df_dash.columns:
         mask &= df_dash[col_comuna].isin(comunas_sel)
-
-    if tipos_sel and col_tipo:
+    if tipos_sel and col_tipo and col_tipo in df_dash.columns:
         mask &= df_dash[col_tipo].isin(tipos_sel)
-
-    if rango_dorms and col_dorms:
+    if rango_dorms and col_dorms and col_dorms in df_dash.columns:
         mask &= df_dash[col_dorms].between(rango_dorms[0], rango_dorms[1])
-
-    if rango_banos and col_banos:
+    if rango_banos and col_banos and col_banos in df_dash.columns:
         mask &= df_dash[col_banos].between(rango_banos[0], rango_banos[1])
-
-    if anos_sel and col_ano:
+    if anos_sel and col_ano and col_ano in df_dash.columns:
         mask &= df_dash[col_ano].isin(anos_sel)
 
     df_dash = df_dash[mask]
 
     if df_dash.empty:
-        st.warning("⚠️ No hay propiedades con los filtros actuales.")
+        st.warning("No hay propiedades con los filtros actuales del dashboard.")
         return
 
-    # ----------------------------------
-    # MÉTRICAS RESUMEN
-    # ----------------------------------
+    # --------- Métricas resumen ----------
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Propiedades filtradas", len(df_dash))
-    col2.metric("UF mínima", int(df_dash["precio_uf_promedio"].min()))
-    col3.metric("UF mediana", int(df_dash["precio_uf_promedio"].median()))
-    col4.metric("UF máxima", int(df_dash["precio_uf_promedio"].max()))
+
+    total_props = len(df_dash)
+    col1.metric("Propiedades filtradas", total_props)
+
+    precio_min = df_dash["precio_uf_promedio"].min()
+    precio_med = df_dash["precio_uf_promedio"].median()
+    precio_max = df_dash["precio_uf_promedio"].max()
+
+    col2.metric("UF mínima", "{:,.0f}".format(precio_min).replace(",", "."))
+    col3.metric("UF mediana", "{:,.0f}".format(precio_med).replace(",", "."))
+    col4.metric("UF máxima", "{:,.0f}".format(precio_max).replace(",", "."))
 
     st.markdown("---")
 
-    # ----------------------------------
-    # GRÁFICO: PRECIO MÍNIMO POR COMUNA
-    # ----------------------------------
-    if col_comuna and col_precio_desde:
-        st.subheader("🏙️ Precio mínimo por comuna (UF)")
+    # --------- Precio mínimo por comuna ----------
+    if col_comuna and col_comuna in df_dash.columns and col_precio_desde and col_precio_desde in df_dash.columns:
+        st.subheader("Precio 'desde' mínimo por comuna (UF)")
 
-        gmin = (
+        precios_min_comuna = (
             df_dash.groupby(col_comuna)[col_precio_desde]
             .min()
             .reset_index()
             .rename(columns={col_precio_desde: "precio_min_uf"})
         )
 
-        graf = (
-            alt.Chart(gmin)
+        chart_min = (
+            alt.Chart(precios_min_comuna)
             .mark_bar()
             .encode(
-                x=alt.X("precio_min_uf:Q", title="UF mínima"),
-                y=alt.Y(f"{col_comuna}:N", sort="-x", title="Comuna"),
+                x=alt.X("precio_min_uf:Q", title="Precio mínimo UF (precio desde)"),
+                y=alt.Y("%s:N" % col_comuna, sort="-x", title="Comuna"),
                 tooltip=[col_comuna, "precio_min_uf"],
             )
-            .properties(height=330)
+            .properties(height=300)
         )
-
-        st.altair_chart(graf, use_container_width=True)
+        st.altair_chart(chart_min, use_container_width=True)
 
     st.markdown("---")
 
-    # ----------------------------------
-    # HISTOGRAMA DE PRECIOS
-    # ----------------------------------
-    st.subheader("📦 Distribución de precios UF")
+    # --------- Histograma precios ----------
+    st.subheader("Distribución de precios")
 
     hist = (
         alt.Chart(df_dash)
         .mark_bar()
         .encode(
-            x=alt.X("precio_uf_promedio:Q", bin=alt.Bin(maxbins=30)),
-            y="count()",
+            x=alt.X(
+                "precio_uf_promedio:Q",
+                bin=alt.Bin(maxbins=30),
+                title="Precio UF (promedio)",
+            ),
+            y=alt.Y("count():Q", title="Cantidad de unidades"),
             tooltip=["count()"],
         )
-        .properties(height=280)
+        .properties(height=250)
     )
-
     st.altair_chart(hist, use_container_width=True)
 
-    st.markdown("---")
+    # --------- Precio por comuna ----------
+    if col_comuna and col_comuna in df_dash.columns:
+        st.subheader("Precio promedio UF por comuna")
 
-    # ----------------------------------
-    # PRECIO PROMEDIO POR TIPO
-    # ----------------------------------
-    if col_tipo:
-        st.subheader("🏘️ Precio promedio UF por tipo de unidad")
+        group_comuna = (
+            df_dash.groupby(col_comuna)["precio_uf_promedio"]
+            .mean()
+            .reset_index()
+            .rename(columns={"precio_uf_promedio": "uf_promedio"})
+        )
 
-        gtipo = (
+        bar_comuna = (
+            alt.Chart(group_comuna)
+            .mark_bar()
+            .encode(
+                x=alt.X("uf_promedio:Q", title="UF promedio"),
+                y=alt.Y("%s:N" % col_comuna, sort="-x", title="Comuna"),
+                tooltip=[col_comuna, "uf_promedio"],
+            )
+            .properties(height=300)
+        )
+        st.altair_chart(bar_comuna, use_container_width=True)
+
+    # --------- Precio por tipo de unidad ----------
+    if col_tipo and col_tipo in df_dash.columns:
+        st.subheader("Precio promedio UF por tipo de unidad")
+
+        group_tipo = (
             df_dash.groupby(col_tipo)["precio_uf_promedio"]
             .mean()
             .reset_index()
+            .rename(columns={"precio_uf_promedio": "uf_promedio"})
         )
 
-        chart_tipo = (
-            alt.Chart(gtipo)
+        bar_tipo = (
+            alt.Chart(group_tipo)
             .mark_bar()
             .encode(
-                x=alt.X(f"{col_tipo}:N", sort="-y"),
-                y=alt.Y("precio_uf_promedio:Q", title="UF promedio"),
-                tooltip=[col_tipo, "precio_uf_promedio"],
+                x=alt.X("%s:N" % col_tipo, sort="-y", title="Tipo de unidad"),
+                y=alt.Y("uf_promedio:Q", title="UF promedio"),
+                tooltip=[col_tipo, "uf_promedio"],
             )
-            .properties(height=260)
+            .properties(height=250)
         )
+        st.altair_chart(bar_tipo, use_container_width=True)
 
-        st.altair_chart(chart_tipo, use_container_width=True)
+    # --------- Scatter precio vs m2 ----------
+    if col_sup and col_sup in df_dash.columns:
+        st.subheader("Relación precio UF vs superficie (m²)")
 
-    st.markdown("---")
+        if col_dorms and col_dorms in df_dash.columns:
+            color_encoding = alt.Color("%s:O" % col_dorms, title="Dormitorios")
+        else:
+            color_encoding = alt.value("#1f77b4")
 
-    # ----------------------------------
-    # SCATTER SUPERFICIE VS PRECIO
-    # ----------------------------------
-    if col_sup:
-        st.subheader("📐 Relación Superficie vs UF")
+        tooltip_fields = []
+        np_col = cm.get("nombre_proyecto")
+        if np_col and np_col in df_dash.columns:
+            tooltip_fields.append(np_col)
+        if col_comuna and col_comuna in df_dash.columns:
+            tooltip_fields.append(col_comuna)
+
+        tooltip_fields.extend(["precio_uf_promedio", col_sup])
+
+        if col_dorms and col_dorms in df_dash.columns:
+            tooltip_fields.append(col_dorms)
+        if col_banos and col_banos in df_dash.columns:
+            tooltip_fields.append(col_banos)
 
         scatter = (
-            alt.Chart(df_dash)
-            .mark_circle(size=70, opacity=0.7)
+            alt.Chart(df_dash.dropna(subset=[col_sup, "precio_uf_promedio"]))
+            .mark_circle(size=60, opacity=0.7)
             .encode(
-                x=alt.X(f"{col_sup}:Q", title="Superficie total (m²)"),
-                y=alt.Y("precio_uf_promedio:Q", title="Precio UF"),
-                color=alt.Color(f"{col_comuna}:N", title="Comuna") if col_comuna else alt.value("#2563EB"),
-                tooltip=[col_comuna, col_sup, "precio_uf_promedio"],
+                x=alt.X("%s:Q" % col_sup, title="Superficie total (m²)"),
+                y=alt.Y("precio_uf_promedio:Q", title="Precio UF (promedio)"),
+                color=color_encoding,
+                tooltip=tooltip_fields,
             )
-            .properties(height=300)
+            .properties(height=350)
         )
 
         st.altair_chart(scatter, use_container_width=True)
 
-# -------------------------------------------------------
-# EXPLORADOR DE PROPIEDADES
-# -------------------------------------------------------
-
-def show_explorador():
-    st.header("🔎 Explorador de Propiedades")
-
-    df = st.session_state.df
-    cm = st.session_state.column_map
-
-    if df.empty:
-        st.warning("Carga primero la planilla.")
-        return
-
-    df_exp = df.copy()
-
-    col_proy = cm.get("nombre_proyecto")
-    col_comuna = cm.get("comuna")
-    col_tipo = cm.get("tipo_unidad")
-    col_precio_desde = cm.get("precio_uf_desde")
-    col_sup = cm.get("superficie_total_m2")
-    col_url = cm.get("url_portal")
-
-    # Convertir a numérico
-    if col_precio_desde:
-        df_exp[col_precio_desde] = _ensure_numeric(df_exp, col_precio_desde)
-    if col_sup:
-        df_exp[col_sup] = _ensure_numeric(df_exp, col_sup)
-
-    # FILTROS
-    with st.expander("Filtros", expanded=True):
-        if col_comuna:
-            comunas = sorted(df_exp[col_comuna].dropna().unique())
-            comunas_sel = st.multiselect("Comunas", comunas, default=comunas)
-        else:
-            comunas_sel = []
-
-        if col_tipo:
-            tipos = sorted(df_exp[col_tipo].dropna().unique())
-            tipos_sel = st.multiselect("Tipo unidad", tipos, default=tipos)
-        else:
-            tipos_sel = []
-
-        if col_precio_desde:
-            uf_min = int(df_exp[col_precio_desde].min())
-            uf_max = int(df_exp[col_precio_desde].max())
-            rango_uf = st.slider("UF", uf_min, uf_max, (uf_min, uf_max))
-        else:
-            rango_uf = None
-
-    # Aplicar filtros
-    mask = pd.Series([True] * len(df_exp))
-
-    if comunas_sel and col_comuna:
-        mask &= df_exp[col_comuna].isin(comunas_sel)
-
-    if tipos_sel and col_tipo:
-        mask &= df_exp[col_tipo].isin(tipos_sel)
-
-    if rango_uf and col_precio_desde:
-        mask &= df_exp[col_precio_desde].between(rango_uf[0], rango_uf[1])
-
-    df_filtrado = df_exp[mask]
-
-    st.subheader(f"Resultados: {len(df_filtrado)} propiedades")
-    st.dataframe(df_filtrado, use_container_width=True)
-
-    # Botón exportar CSV filtrado
-    if not df_filtrado.empty:
-        csv = df_filtrado.to_csv(index=False).encode("utf-8")
-        st.download_button("Descargar CSV filtrado", csv, "propiedades_filtradas.csv", "text/csv")
-
-# -------------------------------------------------------
-# FILTRO DE NOTICIAS INMOBILIARIAS CHILENAS
-# -------------------------------------------------------
-
-NEWS_KEYWORDS = [
-    "inmobiliario", "departamento", "departamentos",
-    "vivienda", "propiedad", "proyecto", "inversión",
-    "arriendo", "compra", "venta", "uf", "uf.",
-    "hipotecario", "hipotecaria", "crédito",
-    "plusvalía", "construcción", "inmobiliaria",
-    "edificio", "sucursal inmobiliaria",
-]
-
-@st.cache_data(ttl=1800)
-def fetch_chile_news(sources):
-    """
-    Obtiene noticias desde RSS chilenas y filtra SOLO noticias del rubro inmobiliario/hipotecario.
-    """
-    try:
-        import feedparser
-    except ImportError:
-        st.error("Falta instalar 'feedparser' en requirements.txt")
-        return []
-
-    noticias = []
-
-    for url in sources:
-        feed = feedparser.parse(url)
-
-        for entry in feed.entries[:30]:
-            titulo = getattr(entry, "title", "")
-            resumen = getattr(entry, "summary", "")
-            link = getattr(entry, "link", "")
-            fecha = getattr(entry, "published", "") or getattr(entry, "updated", "")
-            fuente = feed.feed.title if "title" in feed.feed else url
-
-            texto = (titulo + " " + resumen).lower()
-
-            # Filtrar solo noticias inmobiliarias
-            if any(k in texto for k in NEWS_KEYWORDS):
-                noticias.append({
-                    "titulo": titulo.strip(),
-                    "resumen": resumen.strip(),
-                    "link": link.strip(),
-                    "fecha": fecha,
-                    "fuente": fuente,
-                })
-
-    # Ordenar por fecha si es posible
-    return noticias
-
-
-# -------------------------------------------------------
-# TASAS SBIF (API REAL)
-# -------------------------------------------------------
-
-@st.cache_data(ttl=3600)
-def fetch_sbif_tasas():
-    """
-    Obtiene tasas hipotecarias por banco desde la API del SBIF.
-    Requiere SBIF_API_KEY en st.secrets.
-    """
-    api_key = st.secrets.get("SBIF_API_KEY", None)
-    if not api_key:
-        return None, "Falta SBIF_API_KEY en st.secrets"
-
-    year = datetime.now().year
-
-    url = (
-        f"https://api.sbif.cl/api-sbifv3/recursos_api/"
-        f"tasashipotecarias/{year}?apikey={api_key}&formato=json"
-    )
-
-    try:
-        resp = requests.get(url, timeout=15)
-
-        if resp.status_code != 200:
-            return None, f"Error SBIF HTTP {resp.status_code}"
-
-        data = resp.json()
-
-        if "TasasHipotecarias" not in data:
-            return None, "La API SBIF no devolvió tasas."
-
-        df = pd.DataFrame(data["TasasHipotecarias"])
-
-        # Normalización
-        mapping = {
-            "Institucion": "Banco",
-            "Tipo": "TipoCredito",
-            "Tasa": "Tasa",
-            "Plazo": "Plazo",
-            "Pie": "PieMinimo",
-        }
-
-        df.rename(columns={k: v for k, v in mapping.items() if k in df.columns}, inplace=True)
-
-        # Convertir tasa % → número
-        if "Tasa" in df.columns:
-            df["Tasa_float"] = (
-                df["Tasa"]
-                .astype(str)
-                .str.replace("%", "")
-                .str.replace(",", ".")
-            )
-            df["Tasa_float"] = pd.to_numeric(df["Tasa_float"], errors="coerce")
-
-        return df, None
-
-    except Exception as e:
-        return None, str(e)
-
-
-def compute_tasa_promedio(df):
-    """Promedio simple de tasa hipotecaria."""
-    if df is None or df.empty or "Tasa_float" not in df:
-        return None
-    serie = df["Tasa_float"].dropna()
-    if serie.empty:
-        return None
-    return float(serie.mean())
-
-
-# -------------------------------------------------------
-# INSIGHTS DEL MERCADO (IA CHILE)
-# -------------------------------------------------------
-
-def ia_insights_mercado(noticias, df_tasas, uf_valor):
-    """
-    IA que analiza:
-    - noticias inmobiliarias chilenas,
-    - tasas hipotecarias,
-    - valor UF,
-    - contexto experto,
-    y entrega insights profesionales.
-    """
-    client = get_openai_client()
-    if client is None:
-        return None
-
-    # Preparar contexto
-    titulares = [
-        f"- {n['titulo']} ({n['fuente']})"
-        for n in noticias[:10]
-    ]
-
-    tasas_json = []
-    if df_tasas is not None and not df_tasas.empty:
-        tasas_json = df_tasas.head(10)[["Banco", "TipoCredito", "Tasa"]].to_dict(orient="records")
-
-    contexto = {
-        "noticias_chile": titulares,
-        "tasas_hipotecarias": tasas_json,
-        "uf_hoy": uf_valor,
-    }
-
-    system_prompt = (
-        "Eres un analista inmobiliario senior en Chile.\n"
-        + CHILE_CONTEXT
-        + """
-Tu misión:
-1. Explicar el estado actual del mercado inmobiliario.
-2. Cómo las tasas hipotecarias afectan inversión y primera vivienda.
-3. Riesgos reales que un broker debe considerar para no quedar mal con clientes.
-4. Oportunidades tácticas por comuna y tipo de unidad.
-5. Estrategias de venta profesionales para brokers.
-
-Responde siempre con:
-- lenguaje chileno profesional,
-- análisis realista,
-- sin inventar estadísticas no presentes.
-"""
-    )
-
-    user_prompt = f"""
-CONTEXTO (JSON):
-{json.dumps(contexto, ensure_ascii=False)[:11000]}
-
-TAREA:
-- Entrega un informe completo en 5 secciones:
-  a) Resumen Ejecutivo del mercado.
-  b) Impacto de tasas hipotecarias hoy.
-  c) Oportunidades de inversión concretas.
-  d) Riesgos + comunas a evitar.
-  e) Discurso comercial para brokers.
-"""
-
-    resp = client.chat.completions.create(
-        model="gpt-4.1",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.45,
-    )
-
-    return resp.choices[0].message.content
-
-
-# -------------------------------------------------------
-# VISTA PRINCIPAL: NOTICIAS Y TASAS
-# -------------------------------------------------------
 
 def show_noticias_tasas():
-    st.header("📰 Noticias y Tasas del Mercado")
+    st.header("📰 Noticias & Tasas (Chile)")
 
-    # ---- Noticias ----
-    noticias = fetch_chile_news(st.session_state.news_sources)
+    tab1, tab2, tab3 = st.tabs(
+        ["Noticias inmobiliarias", "Tasas hipotecarias (CMF)", "Insights IA mercado"]
+    )
 
-    with st.expander("📰 Noticias Relevantes (Chile - Rubro Inmobiliario)", expanded=True):
-        if len(noticias) == 0:
-            st.warning("No se encontraron noticias inmobiliarias recientes.")
+    # UF actual para contexto
+    uf_valor, uf_fecha = get_uf_value()
+
+    with tab1:
+        st.subheader("Noticias inmobiliarias chilenas")
+
+        fuentes = st.session_state.news_sources
+        st.caption("Fuentes RSS configuradas:")
+        for f in fuentes:
+            st.markdown(f"- `{f}`")
+
+        noticias = fetch_chile_news(fuentes)
+
+        if not noticias:
+            st.info(
+                "No se pudieron leer noticias desde las fuentes configuradas. "
+                "Revisa las URLs RSS en la sección Configuración."
+            )
         else:
-            for n in noticias[:12]:
-                st.subheader(n["titulo"])
-                st.caption(f"{n['fuente']} — {n['fecha']}")
-                st.write(n["resumen"])
-                st.markdown(f"[Leer más]({n['link']})")
+            for n in noticias:
+                st.markdown("### " + n["titulo"])
+                info = []
+                if n["fuente"]:
+                    info.append(n["fuente"])
+                if n["fecha"]:
+                    info.append(n["fecha"])
+                if info:
+                    st.caption(" · ".join(info))
+                if n["resumen"]:
+                    st.write(n["resumen"])
+                if n["link"]:
+                    st.markdown(f"[Ver nota completa]({n['link']})")
                 st.markdown("---")
 
-    # ---- Tasas SBIF ----
-    st.subheader("📉 Tasas Hipotecarias (SBIF)")
+    with tab2:
+        st.subheader("Tasas de créditos hipotecarios (CMF Chile)")
 
-    df_tasas, error = fetch_sbif_tasas()
+        rows, headers = fetch_cmf_tasas()
 
-    if error:
-        st.error(f"No fue posible obtener tasas SBIF: {error}")
-    else:
-        if df_tasas is None or df_tasas.empty:
-            st.warning("SBIF no entregó datos de tasas.")
+        if not rows:
+            st.info(
+                "No se pudieron obtener las tasas desde la CMF. "
+                "Puede ser un cambio en la página o un problema de conexión."
+            )
         else:
+            # Mostrar tasa promedio mercado (aprox)
+            tasa_prom = compute_tasa_promedio_mercado(rows)
+            if tasa_prom is not None:
+                st.metric(
+                    "Tasa fija promedio (mercado, aproximada)",
+                    f"{tasa_prom:.2f} %",
+                )
+
+            if uf_valor:
+                st.caption(
+                    f"Referencia UF actual: 1 UF ≈ ${uf_valor:,.0f} CLP (mindicador.cl)"
+                    .replace(",", ".")
+                )
+
+            st.markdown("### Tabla resumen (directo desde CMF)")
+
+            # Convertir filas a DataFrame para mejor visualización
+            df_tasas = pd.DataFrame(rows)
             st.dataframe(df_tasas, use_container_width=True)
 
-            # Promedio general
-            tasa_avg = compute_tasa_promedio(df_tasas)
-            if tasa_avg:
-                st.metric("Tasa promedio:", f"{tasa_avg:.2f}%")
-
-    # ---- Insights IA ----
-    st.markdown("---")
-    st.subheader("🧠 Insights del Mercado (IA)")
-
-    uf_valor, _ = get_uf_value()
-
-    if st.button("Generar insights IA"):
-        with st.spinner("Analizando mercado chileno..."):
-            insights = ia_insights_mercado(noticias, df_tasas, uf_valor)
-
-        if insights:
-            st.write(insights)
-        else:
-            st.error("No fue posible generar insights.")
-
-
-# -------------------------------------------------------
-# PERFIL DEL CLIENTE → TEXTO PARA IA
-# -------------------------------------------------------
-
-def build_client_profile_text():
-    cp = st.session_state.client_profile
-
-    txt = f"""
-Cliente: {cp["nombre_cliente"]}
-Objetivo: {cp["objetivo"]}
-Rango UF: {cp["rango_uf"][0]} - {cp["rango_uf"][1]}
-Dormitorios mínimos: {cp["dorms_min"]}
-Baños mínimos: {cp["banos_min"]}
-Superficie: {cp["rango_m2"][0]} - {cp["rango_m2"][1]} m2
-Comunas preferidas: {", ".join(cp["comunas"]) if cp["comunas"] else "Sin preferencia"}
-Años de entrega: {", ".join(cp["anos"]) if cp["anos"] else "Cualquiera"}
-Estados comerciales: {", ".join(cp["estados"]) if cp["estados"] else "Cualquiera"}
-Notas extra: {cp["comentarios"]}
-"""
-    return txt
-
-
-# -------------------------------------------------------
-# IA – Recomendar Propiedades
-# -------------------------------------------------------
-
-def prepare_properties_for_ai(df_props, max_items=40):
-    """Convierte el DF filtrado en JSON resumido para la IA."""
-    cm = st.session_state.column_map
-    props = []
-
-    for i, row in df_props.head(max_items).iterrows():
-        p = {}
-        for key, col in cm.items():
-            if col and col in row:
-                val = row[col]
-                p[key] = None if pd.isna(val) else val
-        p["id_interno"] = int(i)
-        props.append(p)
-
-    return props
-
-
-def ia_recomendaciones(client_profile_text, props_list, top_k=5):
-    """IA selecciona las mejores propiedades para el cliente."""
-    client = get_openai_client()
-    if not client:
-        return None
-
-    system_prompt = (
-        "Eres un asesor inmobiliario senior en Chile.\n"
-        + CHILE_CONTEXT
-        + """
-Tu tarea:
-
-1) Elegir las mejores propiedades para este cliente.
-2) Evitar comunas riesgosas según el contexto experto.
-3) Explicar POR QUÉ son una buena opción.
-4) Dar argumentos comerciales listos para que el broker venda.
-5) Entregar una estrategia general de inversión basada en realidad chilena.
-
-FORMATO OBLIGATORIO:
-JSON con:
-{
- "recomendaciones": [
-   {
-     "id_interno": <id>,
-     "score": <1-10>,
-     "motivo_principal": "<texto>",
-     "argumentos_venta": ["• punto 1", "• punto 2"]
-   }
- ],
- "estrategia_general": "<texto>"
-}
-"""
-    )
-
-    user_prompt = f"""
-PERFIL DEL CLIENTE:
-{client_profile_text}
-
-PROPIEDADES (JSON):
-{json.dumps(props_list, ensure_ascii=False)[:16000]}
-
-TAREA:
-- Seleccionar top {top_k} propiedades.
-- Devolver EXCLUSIVAMENTE el JSON en el formato solicitado.
-"""
-
-    resp = client.chat.completions.create(
-        model="gpt-4.1",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.4,
-    )
-
-    raw = resp.choices[0].message.content
-
-    # Intentar parsear JSON de la IA
-    try:
-        return json.loads(raw)
-    except:
-        try:
-            s = raw[raw.index("{") : raw.rindex("}") + 1]
-            return json.loads(s)
-        except:
-            st.error("La IA devolvió un formato inesperado:")
-            st.code(raw)
-            return None
-
-
-# -------------------------------------------------------
-# Vista – Recomendaciones IA
-# -------------------------------------------------------
-
-def show_recomendaciones_ia():
-    st.header("🤖 Recomendaciones Inteligentes (IA)")
-
-    df = get_filtered_df()  # aplica perfil del cliente
-    if df.empty:
-        st.warning("No hay propiedades que coincidan con el perfil del cliente.")
-        return
-
-    st.write(f"Propiedades consideradas: **{len(df)}**")
-
-    perfil_texto = build_client_profile_text()
-    props_list = prepare_properties_for_ai(df)
-
-    if st.button("Generar recomendaciones IA"):
-        with st.spinner("Analizando opciones ideales para el cliente..."):
-            data = ia_recomendaciones(perfil_texto, props_list, top_k=5)
-
-        if data:
-            st.subheader("🏆 Mejores opciones para el cliente")
-
-            for rec in data["recomendaciones"]:
-                st.markdown(f"### ⭐ Recomendación {rec['score']}/10 — ID {rec['id_interno']}")
-                st.write("**Motivo principal:**", rec["motivo_principal"])
-                st.write("**Argumentos de venta:**")
-                for arg in rec["argumentos_venta"]:
-                    st.write("•", arg)
-                st.markdown("---")
-
-            st.subheader("📘 Estrategia general sugerida por la IA")
-            st.write(data["estrategia_general"])
-
-
-# -------------------------------------------------------
-# IA CHAT – AGENTE CONVERSACIONAL
-# -------------------------------------------------------
-
-def ia_chat(mensaje):
-    """Asesor experto conversacional."""
-    client = get_openai_client()
-    if not client:
-        return None
-
-    perfil_texto = build_client_profile_text()
-    df = get_filtered_df()
-    props_json = prepare_properties_for_ai(df, max_items=25)
-
-    system = (
-        "Eres un asesor inmobiliario chileno senior.\n"
-        + CHILE_CONTEXT
-        + """
-Tienes acceso a:
-- Perfil del cliente
-- Propiedades filtradas
-- Conversación previa
-
-Debes responder con lógica chilena, profesional, clara y usando UF/CLP.
-"""
-    )
-
-    # Construye historial de conversación
-    msgs = [
-        {"role": "system", "content": system},
-        {"role": "assistant",
-         "content": "Contexto cargado. Estoy listo para ayudarte como broker experto."},
-        {"role": "user",
-         "content": f"Contexto inicial:\nPerfil:\n{perfil_texto}\n\nPropiedades:\n{json.dumps(props_json, ensure_ascii=False)[:12000]}"},
-    ]
-
-    for m in st.session_state.chat_history:
-        msgs.append(m)
-
-    msgs.append({"role": "user", "content": mensaje})
-
-    resp = client.chat.completions.create(
-        model="gpt-4.1",
-        messages=msgs,
-        temperature=0.45,
-    )
-
-    return resp.choices[0].message.content
-
-
-# -------------------------------------------------------
-# Vista – Agente IA (Chat)
-# -------------------------------------------------------
-
-def show_agente_ia():
-    st.header("💬 Agente IA – Asesor Inmobiliario")
-
-    user_msg = st.text_input("Escribe tu mensaje o pregunta:")
-
-    if st.button("Enviar"):
-        if user_msg.strip() == "":
-            st.warning("Escribe algo primero.")
-        else:
-            st.session_state.chat_history.append({"role": "user", "content": user_msg})
-
-            with st.spinner("Pensando..."):
-                respuesta = ia_chat(user_msg)
-
-            if respuesta:
-                st.session_state.chat_history.append({"role": "assistant", "content": respuesta})
-
-    # Mostrar historial
-    for m in st.session_state.chat_history:
-        if m["role"] == "user":
-            st.markdown(f"**👤 Tú:** {m['content']}")
-        else:
-            st.markdown(f"**🤖 Asesor IA:** {m['content']}")
-
-
-# -------------------------------------------------------
-# VALOR UF VISUAL EN FOOTER
-# -------------------------------------------------------
-
-@st.cache_data(ttl=1800)
-def get_uf_value():
-    try:
-        resp = requests.get(
-            "https://mindicador.cl/api/uf",
-            timeout=10
-        )
-        data = resp.json()
-        valor = data["serie"][0]["valor"]
-        return valor, None
-    except Exception as e:
-        return None, str(e)
-
-
-# -------------------------------------------------------
-# CONFIGURACIÓN – COLORES Y PERFIL CLIENTE
-# -------------------------------------------------------
-
-def show_configuracion():
-    st.header("⚙️ Configuración del Sistema")
-
-    st.subheader("🎨 Personalizar Colores")
-    theme = st.session_state.theme
-
-    c1, c2, c3 = st.columns(3)
-    theme["primary_color"] = c1.color_picker("Color Primario", theme["primary_color"])
-    theme["secondary_color"] = c2.color_picker("Sidebar", theme["secondary_color"])
-    theme["bg_color"] = c3.color_picker("Fondo General", theme["bg_color"])
-
-    if st.button("Aplicar colores"):
-        st.success("Colores actualizados. Recarga la página para ver efecto.")
-        inject_custom_css()
-
-    st.markdown("---")
-
-    st.subheader("🧑‍💼 Perfil del Cliente")
-
-    cp = st.session_state.client_profile
-
-    cp["nombre_cliente"] = st.text_input("Nombre Cliente")
-
-    cp["objetivo"] = st.selectbox(
-        "Objetivo del Cliente",
-        ["Inversión", "Primera Vivienda", "Mejorar vivienda"],
-        index=["Inversión", "Primera Vivienda", "Mejorar vivienda"].index(cp["objetivo"])
-    )
-
-    cp["rango_uf"] = st.slider(
-        "Rango de Presupuesto UF",
-        500, 20000,
-        value=cp["rango_uf"]
-    )
-
-    cp["dorms_min"] = st.number_input("Dormitorios mínimos", 0, 6, cp["dorms_min"])
-    cp["banos_min"] = st.number_input("Baños mínimos", 0, 5, cp["banos_min"])
-
-    cp["rango_m2"] = st.slider(
-        "Rango superficie total (m2)",
-        20, 200,
-        value=cp["rango_m2"]
-    )
-
-    df = st.session_state.df
-    cm = st.session_state.column_map
-
-    if not df.empty:
-        col_comuna = cm.get("comuna")
-        if col_comuna:
-            comunas = sorted(df[col_comuna].dropna().unique())
-            cp["comunas"] = st.multiselect("Comunas preferidas", comunas, default=cp["comunas"])
-
-        col_ano = cm.get("ano_entrega_estimada")
-        if col_ano:
-            anos = sorted(df[col_ano].dropna().unique())
-            cp["anos"] = st.multiselect("Años entrega estimada", anos, default=cp["anos"])
-
-        col_est = cm.get("estado_comercial")
-        if col_est:
-            estados = sorted(df[col_est].dropna().unique())
-            cp["estados"] = st.multiselect("Estado Comercial", estados, default=cp["estados"])
-
-    cp["comentarios"] = st.text_area("Comentarios adicionales", cp["comentarios"])
-
-    st.success("Perfil cliente actualizado.")
-
-
-# -------------------------------------------------------
-# EXPORTAR PDF
-# -------------------------------------------------------
-
-def export_pdf():
-    from reportlab.lib.pagesizes import letter
-    from reportlab.pdfgen import canvas
-
-    perfil = build_client_profile_text()
-    df = get_filtered_df()
-
-    file_path = "/mnt/data/reporte_broker.pdf"
-
-    c = canvas.Canvas(file_path, pagesize=letter)
-    width, height = letter
-
-    c.setFont("Helvetica", 12)
-    c.drawString(50, height - 40, "REPORTE BROKER IA")
-
-    c.setFont("Helvetica", 10)
-    c.drawString(50, height - 80, "Perfil del Cliente:")
-    text_obj = c.beginText(50, height - 100)
-    text_obj.textLines(perfil)
-    c.drawText(text_obj)
-
-    y = height - 250
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(50, y, "Propiedades Sugeridas:")
-    y -= 20
-
-    c.setFont("Helvetica", 9)
-
-    cm = st.session_state.column_map
-
-    for _, row in df.head(12).iterrows():
-        nombre = row.get(cm.get("nombre_proyecto"), "N/A")
-        comuna = row.get(cm.get("comuna"), "N/A")
-        precio = row.get(cm.get("precio_uf_desde"), "N/A")
-
-        c.drawString(50, y, f"- {nombre} | {comuna} | UF {precio}")
-        y -= 15
-        if y < 100:
-            c.showPage()
-            y = height - 100
-
-    c.save()
-    return file_path
-
-
-def show_exportar_pdf():
-    st.header("📄 Exportar Reporte PDF")
-
-    if st.button("Generar PDF"):
-        with st.spinner("Creando archivo..."):
-            file_path = export_pdf()
-
-        with open(file_path, "rb") as f:
-            st.download_button(
-                "Descargar PDF",
-                f,
-                "reporte_broker.pdf",
-                mime="application/pdf"
+            st.caption(
+                "Origen: Comisión para el Mercado Financiero (CMF). "
+                "Los nombres de columnas pueden variar según la publicación oficial."
             )
 
+    with tab3:
+        st.subheader("Insights IA: mercado inmobiliario & tasas")
 
-# -------------------------------------------------------
-# FILTRADO GLOBAL PARA TODO EL SISTEMA
-# -------------------------------------------------------
+        fuentes = st.session_state.news_sources
+        noticias = fetch_chile_news(fuentes)
+        rows, headers = fetch_cmf_tasas()
 
-def get_filtered_df():
-    """
-    Devuelve las propiedades que coinciden con el perfil del cliente.
-    Se usa en Recomendador IA y Chat IA.
-    """
+        if not noticias and not rows:
+            st.info(
+                "No hay suficientes datos de noticias o tasas para generar insights. "
+                "Revisa la conexión y las fuentes configuradas."
+            )
+        else:
+            if st.button("🧠 Generar insights IA del mercado"):
+                with st.spinner("Analizando mercado, noticias y tasas..."):
+                    texto = ia_insights_mercado(noticias, rows, uf_valor)
+                if texto:
+                    st.markdown(texto)
+
+
+def show_perfil_cliente():
+    st.header("👤 Perfil del cliente")
+
     df = st.session_state.df
-    if df.empty:
-        return df
-
     cm = st.session_state.column_map
     cp = st.session_state.client_profile
 
-    col_precio = cm.get("precio_uf_desde")
-    col_dorms = cm.get("dormitorios")
-    col_banos = cm.get("banos")
-    col_sup = cm.get("superficie_total_m2")
-    col_comuna = cm.get("comuna")
+    if df.empty:
+        st.warning("Primero carga una planilla en **Fuente de propiedades**.")
+        return
 
-    df2 = df.copy()
+    with st.form("perfil_cliente_form"):
+        cp["nombre_cliente"] = st.text_input(
+            "Nombre del cliente (opcional)", value=cp["nombre_cliente"]
+        )
 
-    # Numeric conversions
-    if col_precio:
-        df2[col_precio] = _ensure_numeric(df2, col_precio)
-    if col_dorms:
-        df2[col_dorms] = _ensure_numeric(df2, col_dorms)
-    if col_banos:
-        df2[col_banos] = _ensure_numeric(df2, col_banos)
-    if col_sup:
-        df2[col_sup] = _ensure_numeric(df2, col_sup)
+        cp["objetivo"] = st.selectbox(
+            "Objetivo principal",
+            [
+                "Primera vivienda",
+                "Cambio de vivienda",
+                "Inversión para renta",
+                "Inversión para plusvalía",
+                "Portafolio de inversión (varias propiedades)",
+                "Otro",
+            ],
+            index=[
+                "Primera vivienda",
+                "Cambio de vivienda",
+                "Inversión para renta",
+                "Inversión para plusvalía",
+                "Portafolio de inversión (varias propiedades)",
+                "Otro",
+            ].index(cp["objetivo"]),
+        )
 
-    # Filtros
-    mask = pd.Series([True] * len(df2))
+        # ---- Rango de precio UF según la planilla ----
+        col_precio_desde = cm.get("precio_uf_desde")
+        if col_precio_desde and col_precio_desde in df.columns:
+            df_tmp = df.copy()
+            df_tmp[col_precio_desde] = _ensure_numeric(df_tmp, col_precio_desde)
+            uf_min = int(df_tmp[col_precio_desde].min())
+            uf_max = int(df_tmp[col_precio_desde].max())
+        else:
+            uf_min, uf_max = 1500, 15000
 
-    if col_precio:
-        mask &= df2[col_precio].between(cp["rango_uf"][0], cp["rango_uf"][1])
+        cp["rango_uf"] = st.slider(
+            "Rango de precio en UF",
+            min_value=uf_min,
+            max_value=uf_max,
+            value=(cp["rango_uf"][0], cp["rango_uf"][1]),
+        )
 
-    if col_dorms:
-        mask &= df2[col_dorms] >= cp["dorms_min"]
+        col1, col2 = st.columns(2)
+        with col1:
+            cp["dorms_min"] = st.selectbox(
+                "Dormitorios mínimos",
+                [0, 1, 2, 3, 4, 5],
+                index=[0, 1, 2, 3, 4, 5].index(cp["dorms_min"]),
+            )
+        with col2:
+            cp["banos_min"] = st.selectbox(
+                "Baños mínimos",
+                [0, 1, 2, 3, 4],
+                index=[0, 1, 2, 3, 4].index(cp["banos_min"]),
+            )
 
-    if col_banos:
-        mask &= df2[col_banos] >= cp["banos_min"]
+        # ---- Rango de superficie ----
+        col_sup = cm.get("superficie_total_m2")
+        if col_sup and col_sup in df.columns:
+            df_tmp2 = df.copy()
+            df_tmp2[col_sup] = _ensure_numeric(df_tmp2, col_sup)
+            sup_min = int(df_tmp2[col_sup].min())
+            sup_max = int(df_tmp2[col_sup].max())
+        else:
+            sup_min, sup_max = 20, 150
 
-    if col_sup:
-        mask &= df2[col_sup].between(cp["rango_m2"][0], cp["rango_m2"][1])
+        cp["rango_m2"] = st.slider(
+            "Rango de superficie total (m²)",
+            min_value=sup_min,
+            max_value=sup_max,
+            value=(cp["rango_m2"][0], cp["rango_m2"][1]),
+        )
 
-    if cp["comunas"] and col_comuna:
-        mask &= df2[col_comuna].isin(cp["comunas"])
+        # ---- Filtros por comuna / etapa / año / estado ----
+        col_comuna = cm.get("comuna")
+        if col_comuna and col_comuna in df.columns:
+            comunas = sorted(df[col_comuna].dropna().unique())
+            cp["comunas"] = st.multiselect(
+                "Comunas preferidas",
+                comunas,
+                default=cp["comunas"] if cp["comunas"] else comunas[:3],
+            )
 
-    return df2[mask]
+        col_etapa = cm.get("etapa")
+        if col_etapa and col_etapa in df.columns:
+            etapas = sorted(df[col_etapa].dropna().unique())
+            cp["etapas"] = st.multiselect(
+                "Etapas aceptables",
+                etapas,
+                default=cp["etapas"] if cp["etapas"] else etapas,
+            )
+
+        col_ano = cm.get("ano_entrega_estimada")
+        if col_ano and col_ano in df.columns:
+            df_tmp3 = df.copy()
+            df_tmp3[col_ano] = _ensure_numeric(df_tmp3, col_ano)
+            anos = sorted(df_tmp3[col_ano].dropna().unique())
+            cp["anos"] = st.multiselect(
+                "Años de entrega estimada",
+                anos,
+                default=cp["anos"] if cp["anos"] else anos,
+            )
+
+        col_estado = cm.get("estado_comercial")
+        if col_estado and col_estado in df.columns:
+            estados = sorted(df[col_estado].dropna().unique())
+            cp["estados"] = st.multiselect(
+                "Estado comercial",
+                estados,
+                default=cp["estados"] if cp["estados"] else estados,
+            )
+
+        cp["comentarios"] = st.text_area(
+            "Notas adicionales del broker sobre el cliente",
+            value=cp["comentarios"],
+            height=120,
+        )
+
+        submitted = st.form_submit_button("💾 Guardar perfil")
+
+    # Fuera del form
+    st.session_state.client_profile = cp
+
+    if submitted:
+        st.success("Perfil de cliente guardado. Se usará en explorador, recomendaciones y Agente IA.")
+
+    st.markdown("### Resumen del perfil actual")
+    st.code(build_client_profile_text())
 
 
-# -------------------------------------------------------
-# CARGAR PROPIEDADES (sheet)
-# -------------------------------------------------------
+def show_explorador():
+    st.header("🔍 Explorador de propiedades")
 
-def show_fuentes_propiedades():
-    st.header("📁 Fuente de Propiedades")
+    df = st.session_state.df
+    cm = st.session_state.column_map
 
-    st.write("Carga o usa la planilla de ejemplo:")
+    if df.empty:
+        st.warning("Primero carga una planilla en **Fuente de propiedades**.")
+        return
 
-    if st.button("Cargar planilla ejemplo"):
-        df = get_example_sheet()
-        st.session_state.df = df
-        st.session_state.column_map = map_columns(df)
-        st.success("Planilla ejemplo cargada.")
+    df_filtrado = get_filtered_df()
+    st.write("Propiedades encontradas con el perfil actual: **%s**" % len(df_filtrado))
 
-    file = st.file_uploader("Subir planilla CSV", type=["csv"])
-    if file:
-        df = pd.read_csv(file)
-        st.session_state.df = df
-        st.session_state.column_map = map_columns(df)
-        st.success("Planilla cargada con éxito.")
+    if df_filtrado.empty:
+        st.info("No hay propiedades con los filtros actuales. Ajusta el perfil del cliente.")
+        return
 
-    if not st.session_state.df.empty:
-        st.subheader("Vista previa:")
-        st.dataframe(st.session_state.df.head(20), use_container_width=True)
-
-
-# -------------------------------------------------------
-# ROUTER PRINCIPAL (SIDEBAR)
-# -------------------------------------------------------
-
-def main_router():
-    menu = st.sidebar.selectbox(
-        "Menú",
-        [
-            "Fuente de propiedades",
-            "Dashboard",
-            "Perfil del cliente",
-            "Explorador de propiedades",
-            "Recomendaciones IA",
-            "Agente IA",
-            "Noticias & Tasas",
-            "Exportar PDF",
-            "Configuración",
+    cols_mostrar = [
+        c
+        for c in [
+            cm.get("nombre_proyecto"),
+            cm.get("comuna"),
+            cm.get("tipo_unidad"),
+            cm.get("dormitorios"),
+            cm.get("banos"),
+            cm.get("superficie_total_m2"),
+            cm.get("precio_uf_desde"),
+            cm.get("precio_uf_hasta"),
+            cm.get("etapa"),
+            cm.get("ano_entrega_estimada"),
+            cm.get("estado_comercial"),
+            cm.get("url_portal"),
         ]
+        if c is not None
+    ]
+
+    st.dataframe(df_filtrado[cols_mostrar].reset_index(drop=True))
+
+
+def show_recomendaciones():
+    st.header("🧠 Recomendaciones IA")
+
+    df = st.session_state.df
+    if df.empty:
+        st.warning("Primero carga una planilla en **Fuente de propiedades**.")
+        return
+
+    df_filtrado = get_filtered_df()
+    if df_filtrado.empty:
+        st.info("No hay propiedades filtradas. Ajusta el perfil del cliente.")
+        return
+
+    st.markdown(
+        "El motor IA analizará el perfil del cliente y las propiedades filtradas para sugerir las mejores opciones."
     )
 
-    if menu == "Fuente de propiedades":
-        show_fuentes_propiedades()
-    elif menu == "Dashboard":
-        show_dashboard()
-    elif menu == "Perfil del cliente":
-        show_configuracion()
-    elif menu == "Explorador de propiedades":
-        show_explorador()
-    elif menu == "Recomendaciones IA":
-        show_recomendaciones_ia()
-    elif menu == "Agente IA":
-        show_agente_ia()
-    elif menu == "Noticias & Tasas":
-        show_noticias_tasas()
-    elif menu == "Exportar PDF":
-        show_exportar_pdf()
+    col_left, col_right = st.columns([1, 2])
+    with col_left:
+        top_k = st.number_input(
+            "Cantidad de propiedades a recomendar",
+            min_value=1,
+            max_value=10,
+            value=5,
+            step=1,
+        )
+        pedir = st.button("🔍 Generar recomendaciones IA")
 
+    if pedir:
+        with st.spinner("Analizando propiedades para este cliente..."):
+            perfil_texto = build_client_profile_text()
+            props_list = prepare_properties_for_ai(df_filtrado, max_props=60)
+            data = ia_recomendaciones(perfil_texto, props_list, top_k=int(top_k))
 
-# -------------------------------------------------------
-# FOOTER – UF EN TIEMPO REAL
-# -------------------------------------------------------
+        if data:
+            st.session_state.last_recommendations = {
+                "data": data,
+                "df_filtrado": df_filtrado.reset_index(drop=True).to_dict("records"),
+            }
 
-def show_footer():
-    uf, err = get_uf_value()
-    st.markdown("---")
-    if uf:
-        st.markdown(f"💱 **UF hoy:** {uf:,.2f} CLP")
+    if st.session_state.last_recommendations:
+        data = st.session_state.last_recommendations["data"]
+        df_snap = pd.DataFrame(st.session_state.last_recommendations["df_filtrado"])
+
+        estrategia = data.get("estrategia_general", "")
+        recomendaciones = data.get("recomendaciones", [])
+
+        if estrategia:
+            st.markdown("### 🧭 Estrategia general sugerida")
+            st.write(estrategia)
+
+        st.markdown("### ⭐ Propiedades recomendadas")
+
+        cm = st.session_state.column_map
+
+        for rec in recomendaciones:
+            idx = rec.get("id_interno")
+            score = rec.get("score")
+            motivo = rec.get("motivo_principal", "")
+            argumentos = rec.get("argumentos_venta", [])
+
+            if idx is None or idx >= len(df_snap):
+                continue
+
+            fila = df_snap.iloc[idx]
+
+            st.markdown("---")
+            titulo = (
+                fila.get(cm.get("nombre_proyecto"), "Proyecto sin nombre")
+                if cm.get("nombre_proyecto")
+                else "Proyecto #%s" % idx
+            )
+            st.markdown("#### ⭐ Score %s/10 – %s" % (score, titulo))
+
+            info_lineas = []
+            if cm.get("comuna"):
+                info_lineas.append("**Comuna:** %s" % fila.get(cm["comuna"], ""))
+            if cm.get("tipo_unidad"):
+                info_lineas.append("**Tipo unidad:** %s" % fila.get(cm["tipo_unidad"], ""))
+            if cm.get("dormitorios") and cm.get("banos"):
+                info_lineas.append(
+                    "**Programa:** %sD / %sB"
+                    % (fila.get(cm["dormitorios"], ""), fila.get(cm["banos"], ""))
+                )
+            if cm.get("superficie_total_m2"):
+                info_lineas.append(
+                    "**Sup. total aprox.:** %s m²"
+                    % fila.get(cm["superficie_total_m2"], "")
+                )
+            if cm.get("precio_uf_desde"):
+                info_lineas.append(
+                    "**Precio desde:** %s UF" % fila.get(cm["precio_uf_desde"], "")
+                )
+            if cm.get("etapa"):
+                info_lineas.append("**Etapa:** %s" % fila.get(cm["etapa"], ""))
+            if cm.get("ano_entrega_estimada"):
+                info_lineas.append(
+                    "**Entrega estimada:** %s"
+                    % fila.get(cm["ano_entrega_estimada"], "")
+                )
+            if cm.get("estado_comercial"):
+                info_lineas.append(
+                    "**Estado comercial:** %s"
+                    % fila.get(cm["estado_comercial"], "")
+                )
+
+            st.markdown("  \n".join(info_lineas))
+
+            st.markdown("**Motivo principal:** %s" % motivo)
+
+            if argumentos:
+                st.markdown("**Argumentos de venta sugeridos:**")
+                for a in argumentos:
+                    st.markdown("- %s" % a)
+
+            if cm.get("url_portal"):
+                url = fila.get(cm["url_portal"], "")
+                if isinstance(url, str) and url.strip():
+                    st.markdown("[Ver ficha en portal](%s)" % url)
     else:
-        st.markdown("💱 UF no disponible en este momento.")
+        st.info("Aún no se han generado recomendaciones. Usa el botón de arriba.")
 
 
-# -------------------------------------------------------
-# RUN APP
-# -------------------------------------------------------
+def show_agente_chat():
+    st.header("🤖 Agente IA (chat)")
 
-def run_app():
-    main_router()
-    show_footer()
+    df = st.session_state.df
+    if df.empty:
+        st.warning("Primero carga una planilla en **Fuente de propiedades**.")
+        return
+
+    df_filtrado = get_filtered_df()
+    if df_filtrado.empty:
+        st.info(
+            "No hay propiedades filtradas. Ajusta el perfil del cliente antes de hablar con el agente."
+        )
+        return
+
+    for m in st.session_state.chat_history:
+        if m["role"] == "user":
+            with st.chat_message("user"):
+                st.markdown(m["content"])
+        else:
+            with st.chat_message("assistant"):
+                st.markdown(m["content"])
+
+    user_input = st.chat_input(
+        "Haz una pregunta al Agente IA (estrategias, comparaciones, etc.)"
+    )
+
+    if user_input:
+        st.session_state.chat_history.append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.markdown(user_input)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Pensando respuesta..."):
+                respuesta = ia_chat_libre(user_input)
+                st.markdown(respuesta)
+        st.session_state.chat_history.append(
+            {"role": "assistant", "content": respuesta}
+        )
+
+    st.markdown("---")
+    if st.button("🧹 Limpiar conversación"):
+        st.session_state.chat_history = []
+        st.experimental_rerun()
 
 
-run_app()
+def show_exportar():
+    st.header("📤 Exportar propuesta")
+
+    if st.session_state.df.empty:
+        st.warning("Primero carga propiedades en **Fuente de propiedades**.")
+        return
+
+    if not st.session_state.last_recommendations:
+        st.info(
+            "Aún no hay recomendaciones guardadas. Genera recomendaciones en la sección **Recomendaciones IA**."
+        )
+        return
+
+    data = st.session_state.last_recommendations["data"]
+    df_snap = pd.DataFrame(st.session_state.last_recommendations["df_filtrado"])
+    cm = st.session_state.column_map
+    perfil_texto = build_client_profile_text()
+
+    estrategia = data.get("estrategia_general", "")
+    recomendaciones = data.get("recomendaciones", [])
+
+    st.markdown(
+        "Esta sección genera un resumen en texto (formato Markdown) con el perfil del cliente y el plan sugerido."
+    )
+    st.markdown(
+        "Luego puedes descargar el archivo y usarlo como base para enviar una propuesta al cliente."
+    )
+
+    md = StringIO()
+    md.write("# Propuesta Broker IA\n\n")
+    md.write("## Perfil del cliente\n\n")
+    md.write("```\n%s\n```\n\n" % perfil_texto)
+
+    md.write("## Estrategia general sugerida\n\n")
+    md.write("%s\n\n" % estrategia)
+
+    md.write("## Propiedades recomendadas\n\n")
+    for rec in recomendaciones:
+        idx = rec.get("id_interno")
+        if idx is None or idx >= len(df_snap):
+            continue
+        fila = df_snap.iloc[idx]
+
+        titulo = (
+            fila.get(cm.get("nombre_proyecto"), "Proyecto sin nombre")
+            if cm.get("nombre_proyecto")
+            else "Proyecto #%s" % idx
+        )
+
+        md.write("### %s\n\n" % titulo)
+
+        if cm.get("comuna"):
+            md.write("- **Comuna:** %s\n" % fila.get(cm["comuna"], ""))
+        if cm.get("tipo_unidad"):
+            md.write("- **Tipo unidad:** %s\n" % fila.get(cm["tipo_unidad"], ""))
+        if cm.get("dormitorios") and cm.get("banos"):
+            md.write(
+                "- **Programa:** %sD / %sB\n"
+                % (fila.get(cm["dormitorios"], ""), fila.get(cm["banos"], ""))
+            )
+        if cm.get("superficie_total_m2"):
+            md.write(
+                "- **Superficie total aprox.:** %s m²\n"
+                % fila.get(cm["superficie_total_m2"], "")
+            )
+        if cm.get("precio_uf_desde"):
+            md.write(
+                "- **Precio desde:** %s UF\n" % fila.get(cm["precio_uf_desde"], "")
+            )
+        if cm.get("etapa"):
+            md.write("- **Etapa:** %s\n" % fila.get(cm["etapa"], ""))
+        if cm.get("ano_entrega_estimada"):
+            md.write(
+                "- **Entrega estimada:** %s\n"
+                % fila.get(cm["ano_entrega_estimada"], "")
+            )
+        if cm.get("estado_comercial"):
+            md.write(
+                "- **Estado comercial:** %s\n"
+                % fila.get(cm["estado_comercial"], "")
+            )
+        if cm.get("url_portal"):
+            url = fila.get(cm["url_portal"], "")
+            if isinstance(url, str) and url.strip():
+                md.write("- **Link portal:** %s\n" % url)
+
+        md.write("- **Score IA:** %s/10\n" % rec.get("score"))
+        md.write(
+            "- **Motivo principal:** %s\n" % rec.get("motivo_principal", "")
+        )
+        argumentos = rec.get("argumentos_venta", [])
+        if argumentos:
+            md.write("- **Argumentos de venta sugeridos:**\n")
+            for a in argumentos:
+                md.write("  - %s\n" % a)
+
+        md.write("\n")
+
+    contenido_md = md.getvalue()
+
+    st.markdown("### Vista previa")
+    st.markdown(contenido_md)
+
+    st.download_button(
+        label="⬇️ Descargar propuesta en Markdown",
+        data=contenido_md,
+        file_name="propuesta_broker_ia.md",
+        mime="text/markdown",
+    )
+
+
+def show_configuracion():
+    st.header("⚙️ Configuración de estilo y noticias")
+
+    theme = st.session_state.theme
+
+    st.markdown(
+        "Ajusta los colores principales de Broker IA para que calcen con tu marca o con la inmobiliaria."
+    )
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        primary = st.color_picker(
+            "Color principal (botones, énfasis)", theme["primary_color"]
+        )
+    with col2:
+        secondary = st.color_picker(
+            "Color lateral (sidebar)", theme["secondary_color"]
+        )
+    with col3:
+        bg = st.color_picker("Color de fondo", theme["bg_color"])
+
+    if st.button("💾 Guardar colores"):
+        st.session_state.theme = {
+            "primary_color": primary,
+            "secondary_color": secondary,
+            "bg_color": bg,
+        }
+        st.success("Colores actualizados. Recargando app...")
+        st.experimental_rerun()
+
+    st.markdown("---")
+    st.subheader("Fuentes de noticias (RSS, Chile)")
+
+    current_sources = "\n".join(st.session_state.news_sources)
+    fuentes_text = st.text_area(
+        "URLs RSS (una por línea)",
+        value=current_sources,
+        height=150,
+    )
+
+    if st.button("💾 Guardar fuentes RSS"):
+        nuevas = [
+            line.strip()
+            for line in fuentes_text.splitlines()
+            if line.strip()
+        ]
+        st.session_state.news_sources = nuevas
+        st.success("Fuentes RSS actualizadas. Se usarán en la sección Noticias & Tasas.")
+        st.experimental_rerun()
+
+
+# =========================
+# MENÚ LATERAL
+# =========================
+
+st.sidebar.title("Broker IA")
+st.sidebar.caption("Asistente inmobiliario potenciado con IA")
+
+menu = st.sidebar.radio(
+    "Menú",
+    [
+        "Fuente de propiedades",
+        "Dashboard",
+        "Noticias & Tasas",
+        "Perfil del cliente",
+        "Explorador",
+        "Recomendaciones IA",
+        "Agente IA",
+        "Exportar propuesta",
+        "Configuración",
+    ],
+)
+
+# =========================
+# ROUTER
+# =========================
+
+if menu == "Fuente de propiedades":
+    show_fuente_propiedades()
+elif menu == "Dashboard":
+    show_dashboard()
+elif menu == "Noticias & Tasas":
+    show_noticias_tasas()
+elif menu == "Perfil del cliente":
+    show_perfil_cliente()
+elif menu == "Explorador":
+    show_explorador()
+elif menu == "Recomendaciones IA":
+    show_recomendaciones()
+elif menu == "Agente IA":
+    show_agente_chat()
+elif menu == "Exportar propuesta":
+    show_exportar()
+elif menu == "Configuración":
+    show_configuracion()
+
+# Footer con UF
+show_uf_footer()
