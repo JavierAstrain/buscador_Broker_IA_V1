@@ -606,92 +606,116 @@ def fetch_chile_news(sources):
 @st.cache_data(ttl=3600)
 def fetch_sbif_tasas():
     """
-    Intenta obtener tasas hipotecarias desde SBIF/CMF probando
-    varias URLs conocidas. Devuelve (df, error_str).
+    Obtiene tasas de interés promedio (TIP) desde la API CMF,
+    usando el recurso TIP del año actual.
 
-    Si df es None, error_str tendrá el motivo concreto.
+    Retorna: (df_tasas, error_str)
+      - df_tasas: DataFrame con columnas ['Título','Subtítulo','Fecha','Tasa (%)','Tasa_float', 'Tipo']
+      - error_str: None si todo ok, o un string con el error si algo falla.
     """
-    api_key = st.secrets.get("SBIF_API_KEY", None)
+    # Puedes usar SBIF_API_KEY o CMF_API_KEY en secrets
+    api_key = (
+        st.secrets.get("SBIF_API_KEY")
+        or st.secrets.get("CMF_API_KEY")
+    )
+
     if not api_key:
-        return None, "Falta SBIF_API_KEY en st.secrets"
+        return None, "Falta SBIF_API_KEY o CMF_API_KEY en st.secrets."
 
     year = datetime.now().year
 
-    # Posibles endpoints legales de la antigua API SBIF ahora bajo CMF
-    base_urls = [
-        "https://api.cmfchile.cl/api-sbifv3/recursos_api/tasashipotecarias",
-        "https://api.sbif.cl/api-sbifv3/recursos_api/tasashipotecarias",
-    ]
+    # Endpoint TIP de CMF (igual al que probaste en el navegador)
+    url = f"https://api.cmfchile.cl/api-sbifv3/recursos_api/tip/{year}?apikey={api_key}&formato=json"
 
-    # Probaremos con y sin año en el path, porque la documentación
-    # ha cambiado varias veces.
-    candidate_urls = []
-    for base in base_urls:
-        candidate_urls.append(f"{base}?apikey={api_key}&formato=json")
-        candidate_urls.append(f"{base}/{year}?apikey={api_key}&formato=json")
+    try:
+        resp = requests.get(url, timeout=15)
+    except Exception as e:
+        return None, f"Error de red llamando a CMF TIP: {e}"
 
-    last_error = None
-
-    for url in candidate_urls:
+    if resp.status_code != 200:
+        # Si hay error de key u otro código, devolvemos mensaje claro
         try:
-            resp = requests.get(url, timeout=15)
-        except Exception as e:
-            last_error = f"Error de red al llamar {url}: {e}"
-            continue
+            data_err = resp.json()
+            msg = data_err.get("Mensaje") or data_err.get("message") or str(data_err)
+        except Exception:
+            msg = resp.text[:200]
+        return None, f"HTTP {resp.status_code} desde CMF TIP: {msg}"
 
-        if resp.status_code != 200:
-            last_error = f"HTTP {resp.status_code} al llamar {url}"
-            continue
+    # Intentar parsear JSON
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"No se pudo parsear JSON desde CMF TIP: {e}"
 
-        # A veces la API responde HTML (por ejemplo, página de error),
-        # lo que rompe el json(). Lo capturamos y seguimos probando.
+    # La estructura puede ser {"TIPs":[...]} o directamente una lista
+    if isinstance(data, dict) and "TIPs" in data:
+        tips = data["TIPs"]
+    elif isinstance(data, list):
+        tips = data
+    else:
+        return None, "JSON de CMF TIP no contiene 'TIPs' ni es una lista."
+
+    df = pd.DataFrame(tips)
+
+    # Normalizar nombres esperados
+    rename_map = {}
+    for col in df.columns:
+        low = col.lower()
+        if low == "titulo":
+            rename_map[col] = "Título"
+        elif low == "subtitulo":
+            rename_map[col] = "Subtítulo"
+        elif low == "fecha":
+            rename_map[col] = "Fecha"
+        elif low == "valor":
+            rename_map[col] = "Tasa (%)"
+        elif low == "tipo":
+            rename_map[col] = "Tipo"
+    if rename_map:
+        df.rename(columns=rename_map, inplace=True)
+
+    # Filtro “hipotecario-like”: operaciones reajustables en moneda nacional y plazo ≥ 1 año
+    if "Título" in df.columns and "Subtítulo" in df.columns:
+        mask_hipo = df["Título"].astype(str).str.contains(
+            "reajustables en moneda nacional", case=False, na=False
+        )
+        mask_plazo = df["Subtítulo"].astype(str).str.contains(
+            "un año o más", case=False, na=False
+        )
+        df_filtrado = df[mask_hipo & mask_plazo].copy()
+        # Si el filtro no encuentra nada, nos quedamos con todos los TIP igual
+        if df_filtrado.empty:
+            df_filtrado = df.copy()
+    else:
+        df_filtrado = df.copy()
+
+    # Crear columna numérica Tasa_float a partir de "Tasa (%)"
+    if "Tasa (%)" in df_filtrado.columns:
+        serie = (
+            df_filtrado["Tasa (%)"]
+            .astype(str)
+            .str.replace("%", "", regex=False)
+            .str.replace(",", ".", regex=False)
+            .str.strip()
+        )
+        df_filtrado["Tasa_float"] = pd.to_numeric(serie, errors="coerce")
+    else:
+        df_filtrado["Tasa_float"] = pd.NA
+
+    # Ordenamos por Fecha (si se puede) y recortamos a algo manejable
+    if "Fecha" in df_filtrado.columns:
         try:
-            data = resp.json()
-        except ValueError:
-            last_error = (
-                "La respuesta de SBIF/CMF no está en formato JSON. "
-                f"Contenido inicial: {resp.text[:120]!r}"
-            )
-            continue
+            df_filtrado["Fecha_dt"] = pd.to_datetime(df_filtrado["Fecha"])
+            df_filtrado.sort_values("Fecha_dt", ascending=False, inplace=True)
+        except Exception:
+            pass
 
-        if "TasasHipotecarias" not in data:
-            last_error = (
-                f"La respuesta desde {url} no contiene el campo 'TasasHipotecarias'."
-            )
-            continue
+    # Dejamos solo columnas útiles para la app
+    cols_order = ["Título", "Subtítulo", "Fecha", "Tasa (%)", "Tasa_float", "Tipo"]
+    cols_present = [c for c in cols_order if c in df_filtrado.columns]
+    df_view = df_filtrado[cols_present].head(50).copy()
 
-        df = pd.DataFrame(data["TasasHipotecarias"])
-
-        # Normalizar nombres de columnas típicos
-        rename_map = {}
-        if "Institucion" in df.columns:
-            rename_map["Institucion"] = "Banco"
-        if "Tipo" in df.columns:
-            rename_map["Tipo"] = "TipoCredito"
-        if "Tasa" in df.columns:
-            rename_map["Tasa"] = "Tasa"
-        if "Plazo" in df.columns:
-            rename_map["Plazo"] = "Plazo"
-        if "Pie" in df.columns:
-            rename_map["Pie"] = "PieMinimo"
-
-        if rename_map:
-            df.rename(columns=rename_map, inplace=True)
-
-        # Convertir "Tasa" a número flotante
-        if "Tasa" in df.columns:
-            df["Tasa_float"] = (
-                df["Tasa"]
-                .astype(str)
-                .str.replace("%", "", regex=False)
-                .str.replace(",", ".", regex=False)
-            )
-            df["Tasa_float"] = pd.to_numeric(df["Tasa_float"], errors="coerce")
-
-        return df, None  # ✅ Éxito: salimos aquí
-
-    # Si llegamos aquí, ninguna de las URLs funcionó
-    return None, last_error or "No fue posible obtener datos desde SBIF/CMF"
+    return df_view, None
 
 def compute_tasa_promedio_sbif(df_tasas):
     """
