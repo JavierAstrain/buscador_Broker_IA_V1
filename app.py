@@ -54,6 +54,14 @@ def init_session_state():
             "bg_color": "#F8FAFC",        # Fondo claro
         }
 
+    # Fuentes RSS de noticias chilenas (configurables)
+    if "news_sources" not in st.session_state:
+        st.session_state.news_sources = [
+            "https://www.df.cl/rss",             # Diario Financiero (puede ajustarse)
+            "https://www.latercera.com/rss/",   # La Tercera
+            "https://www.elmostrador.cl/feed/", # El Mostrador
+        ]
+
 
 def inject_custom_css():
     """Aplica colores elegidos por el usuario a la app."""
@@ -498,6 +506,188 @@ Objetivo:
 
 
 # =========================
+# NOTICIAS & TASAS (CHILE)
+# =========================
+
+@st.cache_data(ttl=1800)
+def fetch_chile_news(sources):
+    """
+    Lee noticias desde una lista de RSS (fuentes chilenas).
+    Retorna lista de dicts: {titulo, resumen, link, fuente, fecha}
+    """
+    try:
+        import feedparser
+    except ImportError:
+        st.error("Falta el paquete 'feedparser'. Añade 'feedparser' a requirements.txt.")
+        return []
+
+    noticias = []
+    for url in sources:
+        try:
+            feed = feedparser.parse(url)
+            fuente = feed.feed.title if hasattr(feed, "feed") and "title" in feed.feed else url
+            for entry in feed.entries[:5]:
+                titulo = getattr(entry, "title", "").strip()
+                resumen = getattr(entry, "summary", "").strip()
+                link = getattr(entry, "link", "").strip()
+                fecha = getattr(entry, "published", "") or getattr(entry, "updated", "")
+                if titulo:
+                    noticias.append(
+                        {
+                            "titulo": titulo,
+                            "resumen": resumen,
+                            "link": link,
+                            "fuente": fuente,
+                            "fecha": fecha,
+                        }
+                    )
+        except Exception:
+            continue
+
+    return noticias
+
+
+@st.cache_data(ttl=43200)
+def fetch_cmf_tasas():
+    """
+    Obtiene tabla de tasas hipotecarias desde CMF (scraping liviano).
+    Retorna: (rows, headers)
+    rows: lista de dicts
+    headers: lista de nombres de columnas
+    """
+    url = "https://www.cmfchile.cl/institucional/mercados/tasas_creditos_hipotecarios.php"
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        st.error("Falta el paquete 'beautifulsoup4'. Añade 'beautifulsoup4' a requirements.txt.")
+        return [], []
+
+    try:
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return [], []
+        html = resp.text
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Tomar la primera tabla de datos relevante
+        table = soup.find("table")
+        if table is None:
+            return [], []
+
+        # Encabezados
+        header_cells = table.find("tr").find_all(["th", "td"])
+        headers = [h.get_text(strip=True) for h in header_cells]
+
+        rows = []
+        for tr in table.find_all("tr")[1:]:
+            cells = tr.find_all("td")
+            if not cells:
+                continue
+            values = [c.get_text(strip=True) for c in cells]
+            if len(values) != len(headers):
+                # Alinear por si acaso
+                values = values + [""] * (len(headers) - len(values))
+            row_dict = dict(zip(headers, values))
+            rows.append(row_dict)
+
+        return rows, headers
+    except Exception:
+        return [], []
+
+
+def compute_tasa_promedio_mercado(rows):
+    """
+    Calcula una tasa promedio de mercado a partir de columnas que contengan 'Fija'.
+    Devuelve float o None.
+    """
+    if not rows:
+        return None
+
+    tasas = []
+    for r in rows:
+        for k, v in r.items():
+            if "fija" in k.lower():
+                txt = v.replace("%", "").replace(",", ".").strip()
+                try:
+                    val = float(txt)
+                    tasas.append(val)
+                except Exception:
+                    pass
+                break
+
+    if not tasas:
+        return None
+
+    return sum(tasas) / len(tasas)
+
+
+def ia_insights_mercado(noticias, tasas_rows, uf_valor):
+    """
+    IA que combina noticias + tasas hipotecarias + UF para dar insights de mercado.
+    """
+    client = get_openai_client()
+    if client is None:
+        return None
+
+    # Compactar contexto
+    top_news = noticias[:8]
+    resumen_noticias = [
+        f"- {n['titulo']} ({n['fuente']})"
+        for n in top_news
+    ]
+
+    top_tasas = tasas_rows[:10]
+
+    contexto = {
+        "titulares_chile": resumen_noticias,
+        "ejemplo_tasas": top_tasas,
+        "uf_hoy_aprox": uf_valor,
+    }
+
+    system_prompt = """
+Eres un analista inmobiliario y financiero senior en Chile.
+Tu audiencia son brokers inmobiliarios que venden proyectos nuevos y departamentos.
+
+Con base en:
+- Noticias recientes del mercado chileno.
+- Tasas de créditos hipotecarios por banco (CMF).
+- Nivel actual de la UF.
+
+Debes entregar SIEMPRE:
+1) Un resumen ejecutivo del mercado hoy.
+2) Cómo las tasas actuales afectan:
+   - Inversionistas que compran para renta.
+   - Compradores de primera vivienda.
+3) Estrategias de venta recomendadas para brokers (argumentos concretos).
+4) Riesgos a mencionar con cuidado (tasa alta, plazos, endeudamiento, etc.).
+5) Oportunidades tácticas (por comunas, tickets, tipo de unidad, plazo, etc.).
+
+Usa lenguaje claro, profesional, en español chileno.
+"""
+
+    user_prompt = f"""
+CONTEXT0 ESTRUCTURADO (JSON):
+
+{json.dumps(contexto, ensure_ascii=False)[:11000]}
+
+TAREA:
+- Analiza este contexto y entrega los 5 bloques solicitados.
+- No repitas el JSON. Solo responde en texto bien estructurado, con subtítulos y bullets.
+"""
+
+    resp = client.chat.completions.create(
+        model="gpt-4.1",
+        messages=[
+            {"role": "system", "content": system_prompt.strip()},
+            {"role": "user", "content": user_prompt.strip()},
+        ],
+        temperature=0.5,
+    )
+
+    return resp.choices[0].message.content
+
+
+# =========================
 # VISTAS (DERECHA)
 # =========================
 
@@ -631,7 +821,7 @@ def show_dashboard():
         if col_banos and col_banos in df_dash.columns:
             df_dash[col_banos] = _ensure_numeric(df_dash, col_banos)
             min_b = int(df_dash[col_banos].min())
-            max_b = int(df_dash[col_banos].max())
+            max_b = int(df_dash[col_banos"].max())
             rango_banos = st.slider(
                 "Baños",
                 min_value=min_b,
@@ -810,6 +1000,103 @@ def show_dashboard():
         )
 
         st.altair_chart(scatter, use_container_width=True)
+
+
+def show_noticias_tasas():
+    st.header("📰 Noticias & Tasas (Chile)")
+
+    tab1, tab2, tab3 = st.tabs(
+        ["Noticias inmobiliarias", "Tasas hipotecarias (CMF)", "Insights IA mercado"]
+    )
+
+    # UF actual para contexto
+    uf_valor, uf_fecha = get_uf_value()
+
+    with tab1:
+        st.subheader("Noticias inmobiliarias chilenas")
+
+        fuentes = st.session_state.news_sources
+        st.caption("Fuentes RSS configuradas:")
+        for f in fuentes:
+            st.markdown(f"- `{f}`")
+
+        noticias = fetch_chile_news(fuentes)
+
+        if not noticias:
+            st.info(
+                "No se pudieron leer noticias desde las fuentes configuradas. "
+                "Revisa las URLs RSS en la sección Configuración."
+            )
+        else:
+            for n in noticias:
+                st.markdown("### " + n["titulo"])
+                info = []
+                if n["fuente"]:
+                    info.append(n["fuente"])
+                if n["fecha"]:
+                    info.append(n["fecha"])
+                if info:
+                    st.caption(" · ".join(info))
+                if n["resumen"]:
+                    st.write(n["resumen"])
+                if n["link"]:
+                    st.markdown(f"[Ver nota completa]({n['link']})")
+                st.markdown("---")
+
+    with tab2:
+        st.subheader("Tasas de créditos hipotecarios (CMF Chile)")
+
+        rows, headers = fetch_cmf_tasas()
+
+        if not rows:
+            st.info(
+                "No se pudieron obtener las tasas desde la CMF. "
+                "Puede ser un cambio en la página o un problema de conexión."
+            )
+        else:
+            # Mostrar tasa promedio mercado (aprox)
+            tasa_prom = compute_tasa_promedio_mercado(rows)
+            if tasa_prom is not None:
+                st.metric(
+                    "Tasa fija promedio (mercado, aproximada)",
+                    f"{tasa_prom:.2f} %",
+                )
+
+            if uf_valor:
+                st.caption(
+                    f"Referencia UF actual: 1 UF ≈ ${uf_valor:,.0f} CLP (mindicador.cl)"
+                    .replace(",", ".")
+                )
+
+            st.markdown("### Tabla resumen (directo desde CMF)")
+
+            # Convertir filas a DataFrame para mejor visualización
+            df_tasas = pd.DataFrame(rows)
+            st.dataframe(df_tasas, use_container_width=True)
+
+            st.caption(
+                "Origen: Comisión para el Mercado Financiero (CMF). "
+                "Los nombres de columnas pueden variar según la publicación oficial."
+            )
+
+    with tab3:
+        st.subheader("Insights IA: mercado inmobiliario & tasas")
+
+        fuentes = st.session_state.news_sources
+        noticias = fetch_chile_news(fuentes)
+        rows, headers = fetch_cmf_tasas()
+
+        if not noticias and not rows:
+            st.info(
+                "No hay suficientes datos de noticias o tasas para generar insights. "
+                "Revisa la conexión y las fuentes configuradas."
+            )
+        else:
+            if st.button("🧠 Generar insights IA del mercado"):
+                with st.spinner("Analizando mercado, noticias y tasas..."):
+                    texto = ia_insights_mercado(noticias, rows, uf_valor)
+                if texto:
+                    st.markdown(texto)
 
 
 def show_perfil_cliente():
@@ -1273,7 +1560,7 @@ def show_exportar():
 
 
 def show_configuracion():
-    st.header("⚙️ Configuración de estilo")
+    st.header("⚙️ Configuración de estilo y noticias")
 
     theme = st.session_state.theme
 
@@ -1302,6 +1589,26 @@ def show_configuracion():
         st.success("Colores actualizados. Recargando app...")
         st.experimental_rerun()
 
+    st.markdown("---")
+    st.subheader("Fuentes de noticias (RSS, Chile)")
+
+    current_sources = "\n".join(st.session_state.news_sources)
+    fuentes_text = st.text_area(
+        "URLs RSS (una por línea)",
+        value=current_sources,
+        height=150,
+    )
+
+    if st.button("💾 Guardar fuentes RSS"):
+        nuevas = [
+            line.strip()
+            for line in fuentes_text.splitlines()
+            if line.strip()
+        ]
+        st.session_state.news_sources = nuevas
+        st.success("Fuentes RSS actualizadas. Se usarán en la sección Noticias & Tasas.")
+        st.experimental_rerun()
+
 
 # =========================
 # MENÚ LATERAL
@@ -1315,6 +1622,7 @@ menu = st.sidebar.radio(
     [
         "Fuente de propiedades",
         "Dashboard",
+        "Noticias & Tasas",
         "Perfil del cliente",
         "Explorador",
         "Recomendaciones IA",
@@ -1332,6 +1640,8 @@ if menu == "Fuente de propiedades":
     show_fuente_propiedades()
 elif menu == "Dashboard":
     show_dashboard()
+elif menu == "Noticias & Tasas":
+    show_noticias_tasas()
 elif menu == "Perfil del cliente":
     show_perfil_cliente()
 elif menu == "Explorador":
