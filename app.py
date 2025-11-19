@@ -818,16 +818,16 @@ def show_dashboard():
         else:
             rango_dorms = None
 
-        if col_banos and col_banos in df_dash.columns:
-            df_dash[col_banos] = _ensure_numeric(df_dash, col_banos)
-            min_b = int(df_dash[col_banos].min())
-            max_b = int(df_dash[col_banos"].max())
-            rango_banos = st.slider(
-                "Baños",
-                min_value=min_b,
-                max_value=max_b,
-                value=(min_b, max_b),
-            )
+if col_banos and col_banos in df_dash.columns:
+    df_dash[col_banos] = _ensure_numeric(df_dash, col_banos)
+    min_b = int(df_dash[col_banos].min())
+    max_b = int(df_dash[col_banos].max())
+    rango_banos = st.slider(
+        "Baños",
+        min_value=min_b,
+        max_value=max_b,
+        value=(min_b, max_b),
+    )
         else:
             rango_banos = None
 
