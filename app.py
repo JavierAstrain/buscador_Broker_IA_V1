@@ -752,6 +752,7 @@ def show_dashboard():
     col_banos = cm.get("banos")
     col_ano = cm.get("ano_entrega_estimada")
 
+    # --- Limpieza numérica ---
     if col_precio_desde and col_precio_desde in df_dash.columns:
         df_dash[col_precio_desde] = _ensure_numeric(df_dash, col_precio_desde)
     if col_precio_hasta and col_precio_hasta in df_dash.columns:
@@ -759,6 +760,7 @@ def show_dashboard():
     if col_sup and col_sup in df_dash.columns:
         df_dash[col_sup] = _ensure_numeric(df_dash, col_sup)
 
+    # Precio UF promedio
     if col_precio_desde and col_precio_desde in df_dash.columns:
         if col_precio_hasta and col_precio_hasta in df_dash.columns:
             df_dash["precio_uf_promedio"] = (
@@ -775,6 +777,7 @@ def show_dashboard():
     else:
         df_dash["precio_uf_m2"] = None
 
+    # ---------------- Filtros ----------------
     with st.expander("🎛️ Filtros del dashboard", expanded=True):
         uf_min = int(df_dash["precio_uf_promedio"].min())
         uf_max = int(df_dash["precio_uf_promedio"].max())
@@ -818,16 +821,16 @@ def show_dashboard():
         else:
             rango_dorms = None
 
-if col_banos and col_banos in df_dash.columns:
-    df_dash[col_banos] = _ensure_numeric(df_dash, col_banos)
-    min_b = int(df_dash[col_banos].min())
-    max_b = int(df_dash[col_banos].max())
-    rango_banos = st.slider(
-        "Baños",
-        min_value=min_b,
-        max_value=max_b,
-        value=(min_b, max_b),
-    )
+        if col_banos and col_banos in df_dash.columns:
+            df_dash[col_banos] = _ensure_numeric(df_dash, col_banos)
+            min_b = int(df_dash[col_banos].min())
+            max_b = int(df_dash[col_banos].max())
+            rango_banos = st.slider(
+                "Baños",
+                min_value=min_b,
+                max_value=max_b,
+                value=(min_b, max_b),
+            )
         else:
             rango_banos = None
 
@@ -842,6 +845,7 @@ if col_banos and col_banos in df_dash.columns:
         else:
             anos_sel = []
 
+    # Aplicar filtros
     mask = df_dash["precio_uf_promedio"].between(
         rango_uf_dash[0],
         rango_uf_dash[1],
@@ -864,6 +868,7 @@ if col_banos and col_banos in df_dash.columns:
         st.warning("No hay propiedades con los filtros actuales del dashboard.")
         return
 
+    # --------- Métricas resumen ----------
     col1, col2, col3, col4 = st.columns(4)
 
     total_props = len(df_dash)
@@ -879,6 +884,7 @@ if col_banos and col_banos in df_dash.columns:
 
     st.markdown("---")
 
+    # --------- Precio mínimo por comuna ----------
     if col_comuna and col_comuna in df_dash.columns and col_precio_desde and col_precio_desde in df_dash.columns:
         st.subheader("Precio 'desde' mínimo por comuna (UF)")
 
@@ -903,6 +909,7 @@ if col_banos and col_banos in df_dash.columns:
 
     st.markdown("---")
 
+    # --------- Histograma precios ----------
     st.subheader("Distribución de precios")
 
     hist = (
@@ -921,6 +928,7 @@ if col_banos and col_banos in df_dash.columns:
     )
     st.altair_chart(hist, use_container_width=True)
 
+    # --------- Precio por comuna ----------
     if col_comuna and col_comuna in df_dash.columns:
         st.subheader("Precio promedio UF por comuna")
 
@@ -943,6 +951,7 @@ if col_banos and col_banos in df_dash.columns:
         )
         st.altair_chart(bar_comuna, use_container_width=True)
 
+    # --------- Precio por tipo de unidad ----------
     if col_tipo and col_tipo in df_dash.columns:
         st.subheader("Precio promedio UF por tipo de unidad")
 
@@ -965,6 +974,7 @@ if col_banos and col_banos in df_dash.columns:
         )
         st.altair_chart(bar_tipo, use_container_width=True)
 
+    # --------- Scatter precio vs m2 ----------
     if col_sup and col_sup in df_dash.columns:
         st.subheader("Relación precio UF vs superficie (m²)")
 
