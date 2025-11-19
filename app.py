@@ -607,59 +607,27 @@ def fetch_chile_news(sources):
 @st.cache_data(ttl=3600)
 def fetch_sbif_tasas():
     """
-    Intenta obtener tasas hipotecarias desde SBIF/CMF probando
-    varias URLs conocidas. Devuelve (df, error_str).
-
-    Si df es None, error_str tendrá el motivo concreto.
+    Obtiene tabla de tasas hipotecarias desde SBIF (API).
+    Retorna: (df_tasas, error_str)
     """
     api_key = st.secrets.get("SBIF_API_KEY", None)
     if not api_key:
         return None, "Falta SBIF_API_KEY en st.secrets"
 
     year = datetime.now().year
+    url = (
+        f"https://api.sbif.cl/api-sbifv3/recursos_api/tasashipotecarias/{year}"
+        f"?apikey={api_key}&formato=json"
+    )
 
-    # Posibles endpoints legales de la antigua API SBIF ahora bajo CMF
-    base_urls = [
-        "https://api.cmfchile.cl/api-sbifv3/recursos_api/tasashipotecarias",
-        "https://api.sbif.cl/api-sbifv3/recursos_api/tasashipotecarias",
-    ]
-
-    # Probaremos con y sin año en el path, porque la documentación
-    # ha cambiado varias veces.
-    candidate_urls = []
-    for base in base_urls:
-        candidate_urls.append(f"{base}?apikey={api_key}&formato=json")
-        candidate_urls.append(f"{base}/{year}?apikey={api_key}&formato=json")
-
-    last_error = None
-
-    for url in candidate_urls:
-        try:
-            resp = requests.get(url, timeout=15)
-        except Exception as e:
-            last_error = f"Error de red al llamar {url}: {e}"
-            continue
-
+    try:
+        resp = requests.get(url, timeout=15)
         if resp.status_code != 200:
-            last_error = f"HTTP {resp.status_code} al llamar {url}"
-            continue
+            return None, f"Error SBIF HTTP {resp.status_code}"
 
-        # A veces la API responde HTML (por ejemplo, página de error),
-        # lo que rompe el json(). Lo capturamos y seguimos probando.
-        try:
-            data = resp.json()
-        except ValueError:
-            last_error = (
-                "La respuesta de SBIF/CMF no está en formato JSON. "
-                f"Contenido inicial: {resp.text[:120]!r}"
-            )
-            continue
-
+        data = resp.json()
         if "TasasHipotecarias" not in data:
-            last_error = (
-                f"La respuesta desde {url} no contiene el campo 'TasasHipotecarias'."
-            )
-            continue
+            return None, "La API SBIF no devolvió 'TasasHipotecarias'."
 
         df = pd.DataFrame(data["TasasHipotecarias"])
 
@@ -689,10 +657,7 @@ def fetch_sbif_tasas():
             )
             df["Tasa_float"] = pd.to_numeric(df["Tasa_float"], errors="coerce")
 
-        return df, None  # ✅ Éxito: salimos aquí
-
-    # Si llegamos aquí, ninguna de las URLs funcionó
-    return None, last_error or "No fue posible obtener datos desde SBIF/CMF"
+        return df, None
 
     except Exception as e:
         return None, str(e)
