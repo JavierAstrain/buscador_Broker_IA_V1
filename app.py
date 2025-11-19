@@ -510,39 +510,74 @@ Objetivo:
 # =========================
 
 @st.cache_data(ttl=1800)
+
+NEWS_KEYWORDS = [
+    "inmobiliario",
+    "departamento",
+    "departamentos",
+    "vivienda",
+    "propiedad",
+    "proyecto",
+    "proyectos",
+    "inversión",
+    "arriendo",
+    "arrienda",
+    "compra",
+    "venta",
+    "uf",
+    "hipotecario",
+    "hipotecaria",
+    "crédito",
+    "créditos",
+    "plusvalía",
+    "construcción",
+    "inmobiliaria",
+    "edificio",
+]
+
+@st.cache_data(ttl=1800)
 def fetch_chile_news(sources):
     """
-    Lee noticias desde una lista de RSS (fuentes chilenas).
-    Retorna lista de dicts: {titulo, resumen, link, fuente, fecha}
+    Obtiene noticias desde RSS chilenas y filtra SOLO noticias del rubro
+    inmobiliario / hipotecario usando palabras clave.
     """
     try:
         import feedparser
     except ImportError:
-        st.error("Falta el paquete 'feedparser'. Añade 'feedparser' a requirements.txt.")
+        st.error("Falta instalar 'feedparser' en requirements.txt")
         return []
 
     noticias = []
+
     for url in sources:
         try:
             feed = feedparser.parse(url)
-            fuente = feed.feed.title if hasattr(feed, "feed") and "title" in feed.feed else url
-            for entry in feed.entries[:5]:
-                titulo = getattr(entry, "title", "").strip()
-                resumen = getattr(entry, "summary", "").strip()
-                link = getattr(entry, "link", "").strip()
-                fecha = getattr(entry, "published", "") or getattr(entry, "updated", "")
-                if titulo:
-                    noticias.append(
-                        {
-                            "titulo": titulo,
-                            "resumen": resumen,
-                            "link": link,
-                            "fuente": fuente,
-                            "fecha": fecha,
-                        }
-                    )
         except Exception:
             continue
+
+        fuente = getattr(feed.feed, "title", url) if hasattr(feed, "feed") else url
+
+        for entry in feed.entries[:30]:
+            titulo = getattr(entry, "title", "") or ""
+            resumen = getattr(entry, "summary", "") or ""
+            link = getattr(entry, "link", "") or ""
+            fecha = getattr(entry, "published", "") or getattr(entry, "updated", "")
+
+            texto = (titulo + " " + resumen).lower()
+
+            # Filtrar solo noticias inmobiliarias
+            if not any(k in texto for k in NEWS_KEYWORDS):
+                continue
+
+            noticias.append(
+                {
+                    "titulo": titulo.strip(),
+                    "resumen": resumen.strip(),
+                    "link": link.strip(),
+                    "fecha": fecha,
+                    "fuente": fuente,
+                }
+            )
 
     return noticias
 
