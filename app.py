@@ -560,48 +560,85 @@ Objetivo:
 # =========================
 
 @st.cache_data(ttl=1800)
-def fetch_chile_news(sources):
+def fetch_chile_news(max_items: int = 20):
     """
-    Lee noticias desde una lista de RSS (fuentes chilenas) y filtra SOLO noticias
-    inmobiliarias / hipotecarias mediante palabras clave.
-    Retorna lista de dicts: {titulo, resumen, link, fuente, fecha}
+    Noticias inmobiliarias desde El Diario Inmobiliario (Chile).
+
+    Scrapea titulares recientes desde:
+    - Home (destacados)
+    - Sección Mercado Inmobiliario
+
+    Retorna una lista de dicts:
+        [{title, url, date, source, category}]
     """
     try:
-        import feedparser
+        from bs4 import BeautifulSoup
     except ImportError:
-        st.error("Falta el paquete 'feedparser'. Añade 'feedparser' a requirements.txt.")
+        st.error(
+            "Falta el paquete 'beautifulsoup4' para leer noticias desde "
+            "El Diario Inmobiliario. Agrégalo a requirements.txt."
+        )
         return []
 
+    base_urls = [
+        "https://eldiarioinmobiliario.cl/",
+        "https://eldiarioinmobiliario.cl/tag/mercado-inmobiliario/",
+    ]
+
     noticias = []
-    for url in sources:
+
+    for url in base_urls:
         try:
-            feed = feedparser.parse(url)
-            fuente = feed.feed.title if hasattr(feed, "feed") and "title" in feed.feed else url
-            for entry in feed.entries[:20]:
-                titulo = getattr(entry, "title", "").strip()
-                resumen = getattr(entry, "summary", "").strip()
-                link = getattr(entry, "link", "").strip()
-                fecha = getattr(entry, "published", "") or getattr(entry, "updated", "")
-                if not titulo:
-                    continue
-
-                texto = (titulo + " " + resumen).lower()
-                if not any(k in texto for k in NEWS_KEYWORDS):
-                    continue  # filtrar lo que no sea del rubro inmobiliario
-
-                noticias.append(
-                    {
-                        "titulo": titulo,
-                        "resumen": resumen,
-                        "link": link,
-                        "fuente": fuente,
-                        "fecha": fecha,
-                    }
-                )
+            resp = requests.get(url, timeout=10)
         except Exception:
             continue
 
+        if resp.status_code != 200:
+            continue
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # WordPress típico: cada noticia en <article>
+        for art in soup.find_all("article"):
+            link_tag = art.find("a")
+            if not link_tag or not link_tag.get("href"):
+                continue
+
+            title = link_tag.get_text(strip=True)
+            link = link_tag["href"]
+
+            # Fecha (si viene como <time>)
+            time_tag = art.find("time")
+            date_text = time_tag.get_text(strip=True) if time_tag else ""
+
+            # Categorías (links de categoría)
+            cats = []
+            for cat_tag in art.find_all("a"):
+                # muchas plantillas usan rel="category tag", pero por si acaso
+                if cat_tag.get("rel") == ["category", "tag"] or "category" in (
+                    cat_tag.get("class") or []
+                ):
+                    cats.append(cat_tag.get_text(strip=True))
+            category = ", ".join(cats) if cats else ""
+
+            # Evitar duplicados por URL
+            if any(n["url"] == link for n in noticias):
+                continue
+
+            noticias.append(
+                {
+                    "title": title,
+                    "url": link,
+                    "date": date_text,
+                    "source": "El Diario Inmobiliario",
+                    "category": category,
+                }
+            )
+
+    # Orden simple: como vienen (ya suelen venir por fecha desc)
+    noticias = noticias[:max_items]
     return noticias
+
 
 @st.cache_data(ttl=3600)
 def fetch_sbif_tasas():
