@@ -560,7 +560,7 @@ Objetivo:
 # =========================
 
 @st.cache_data(ttl=1800)
-def fetch_chile_news(max_items: int = 20):
+def fetch_chile_news(fuentes=None, max_items: int = 20):
     """
     Noticias inmobiliarias desde El Diario Inmobiliario (Chile).
 
