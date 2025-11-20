@@ -5,6 +5,8 @@ from io import StringIO
 import altair as alt
 import requests
 from datetime import datetime
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
 from openai import OpenAI
 
@@ -54,12 +56,12 @@ def init_session_state():
             "bg_color": "#F8FAFC",        # Fondo claro
         }
 
-    # Fuentes RSS de noticias chilenas (configurables)
+    # Fuentes de noticias EXCLUSIVAMENTE inmobiliarias (configurables)
     if "news_sources" not in st.session_state:
         st.session_state.news_sources = [
-            "https://www.df.cl/rss",             # Diario Financiero (puede ajustarse)
-            "https://www.latercera.com/rss/",   # La Tercera
-            "https://www.elmostrador.cl/feed/", # El Mostrador
+            "https://eldiarioinmobiliario.cl/",
+            "https://www.latercera.com/etiqueta/mercado-inmobiliario/",
+            "https://mercadosinmobiliarios.cl/",
         ]
 
 
@@ -516,7 +518,7 @@ Objetivo:
 - Dar respuestas claras, accionables y profesionales.
 - Recomendar comunas, tipos de unidades, estrategias (renta, plusvalía, portafolio).
 - Usar UF y CLP, realidad chilena y lenguaje cercano pero profesional.
-- Evitar sugerir comunas o productos marcados como riesgosos en el contexto.
+- Evitar sugerir comunas o productos marcados como riesgosas en el contexto.
 """
     )
 
@@ -562,8 +564,13 @@ Objetivo:
 @st.cache_data(ttl=1800)
 def fetch_chile_news(sources):
     """
-    Lee noticias desde una lista de RSS (fuentes chilenas) y filtra SOLO noticias
+    Lee noticias desde una lista de fuentes chilenas y filtra SOLO noticias
     inmobiliarias / hipotecarias mediante palabras clave.
+
+    - Si la URL es un RSS/Atom válido, se usa feedparser.
+    - Si la URL es una página HTML (como eldiarioinmobiliario.cl), se hace un
+      scrape simple con BeautifulSoup.
+
     Retorna lista de dicts: {titulo, resumen, link, fuente, fecha}
     """
     try:
@@ -573,11 +580,31 @@ def fetch_chile_news(sources):
         return []
 
     noticias = []
+
     for url in sources:
+        if not url:
+            continue
+
+        # -------------------------------
+        # 1) Intentar como RSS / Atom
+        # -------------------------------
+        usó_rss = False
+        noticias_antes = len(noticias)
+
         try:
             feed = feedparser.parse(url)
-            fuente = feed.feed.title if hasattr(feed, "feed") and "title" in feed.feed else url
-            for entry in feed.entries[:20]:
+        except Exception:
+            feed = None
+
+        if feed and getattr(feed, "entries", None):
+            usó_rss = True
+            fuente = (
+                feed.feed.title
+                if hasattr(feed, "feed") and "title" in feed.feed
+                else url
+            )
+
+            for entry in feed.entries[:25]:
                 titulo = getattr(entry, "title", "").strip()
                 resumen = getattr(entry, "summary", "").strip()
                 link = getattr(entry, "link", "").strip()
@@ -586,8 +613,9 @@ def fetch_chile_news(sources):
                     continue
 
                 texto = (titulo + " " + resumen).lower()
-                if not any(k in texto for k in NEWS_KEYWORDS):
-                    continue  # filtrar lo que no sea del rubro inmobiliario
+                # seguimos filtrando por palabras clave para evitar ruido
+                if NEWS_KEYWORDS and not any(k in texto for k in NEWS_KEYWORDS):
+                    continue
 
                 noticias.append(
                     {
@@ -598,8 +626,65 @@ def fetch_chile_news(sources):
                         "fecha": fecha,
                     }
                 )
-        except Exception:
-            continue
+
+        # Si no se agregó nada vía RSS (o no era RSS), probamos scrape HTML
+        if (not usó_rss) or (len(noticias) == noticias_antes):
+            try:
+                resp = requests.get(url, timeout=10)
+                if resp.status_code != 200:
+                    continue
+
+                soup = BeautifulSoup(resp.text, "html.parser")
+            except Exception:
+                continue
+
+            fuente = (
+                soup.title.string.strip()
+                if soup.title and soup.title.string
+                else url
+            )
+
+            # Intento 1: usar <article>
+            articles = soup.find_all("article")
+
+            # Intento 2 (fallback): divs típicos de posts
+            if not articles:
+                candidates = soup.select(
+                    "div.post, div.article, div.entry, div.noticia, li.post"
+                )
+                articles = candidates or []
+
+            for art in articles[:20]:
+                a = art.find("a")
+                if not a:
+                    continue
+
+                titulo = a.get_text(strip=True)
+                href = a.get("href", "").strip()
+                if not titulo or not href:
+                    continue
+
+                link = urljoin(url, href)
+
+                p = art.find("p")
+                resumen = p.get_text(strip=True) if p else ""
+                fecha = ""
+
+                texto = (titulo + " " + resumen).lower()
+                # Igual mantenemos filtro por palabras clave por seguridad,
+                # aunque las fuentes sean inmobiliarias
+                if NEWS_KEYWORDS and not any(k in texto for k in NEWS_KEYWORDS):
+                    continue
+
+                noticias.append(
+                    {
+                        "titulo": titulo,
+                        "resumen": resumen,
+                        "link": link,
+                        "fuente": fuente,
+                        "fecha": fecha,
+                    }
+                )
 
     return noticias
 
@@ -1145,7 +1230,7 @@ def show_noticias_tasas():
         st.subheader("Noticias inmobiliarias chilenas")
 
         fuentes = st.session_state.news_sources
-        st.caption("Fuentes RSS configuradas:")
+        st.caption("Fuentes configuradas:")
         for f in fuentes:
             st.markdown(f"- `{f}`")
 
@@ -1154,7 +1239,7 @@ def show_noticias_tasas():
         if not noticias:
             st.info(
                 "No se encontraron noticias inmobiliarias recientes desde las fuentes configuradas. "
-                "Revisa las URLs RSS en la sección Configuración."
+                "Revisa las URLs en la sección Configuración."
             )
         else:
             for n in noticias:
@@ -1718,23 +1803,23 @@ def show_configuracion():
         st.experimental_rerun()
 
     st.markdown("---")
-    st.subheader("Fuentes de noticias (RSS, Chile)")
+    st.subheader("Fuentes de noticias (Chile)")
 
     current_sources = "\n".join(st.session_state.news_sources)
     fuentes_text = st.text_area(
-        "URLs RSS (una por línea)",
+        "URLs (una por línea)",
         value=current_sources,
         height=150,
     )
 
-    if st.button("💾 Guardar fuentes RSS"):
+    if st.button("💾 Guardar fuentes de noticias"):
         nuevas = [
             line.strip()
             for line in fuentes_text.splitlines()
             if line.strip()
         ]
         st.session_state.news_sources = nuevas
-        st.success("Fuentes RSS actualizadas. Se usarán en la sección Noticias & Tasas.")
+        st.success("Fuentes de noticias actualizadas. Se usarán en la sección Noticias & Tasas.")
         st.experimental_rerun()
 
 
