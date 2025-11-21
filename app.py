@@ -64,6 +64,18 @@ def init_session_state():
             "https://mercadosinmobiliarios.cl/",
         ]
 
+    # Menú principal simplificado
+    if "main_menu" not in st.session_state:
+        st.session_state.main_menu = "📁 Datos"
+
+    # Wizard de Datos (1: Cargar propiedades, 2: Perfil, 3: Explorador)
+    if "datos_step" not in st.session_state:
+        st.session_state.datos_step = 1
+
+    # Wizard de Recomendaciones (1: Recomendaciones IA, 2: Exportar)
+    if "recom_step" not in st.session_state:
+        st.session_state.recom_step = 1
+
 
 def inject_custom_css():
     """Aplica colores elegidos por el usuario a la app."""
@@ -892,7 +904,7 @@ TAREA:
 
 
 # =========================
-# VISTAS (DERECHA)
+# VISTAS BASE (REUTILIZABLES)
 # =========================
 
 def show_fuente_propiedades():
@@ -942,7 +954,7 @@ def show_dashboard():
     cm = st.session_state.column_map
 
     if df.empty:
-        st.warning("Primero carga una planilla en **Fuente de propiedades**.")
+        st.warning("Primero carga una planilla en **Datos → Paso 1: Cargar propiedades**.")
         return
 
     df_dash = df.copy()
@@ -1320,7 +1332,7 @@ def show_perfil_cliente():
     cp = st.session_state.client_profile
 
     if df.empty:
-        st.warning("Primero carga una planilla en **Fuente de propiedades**.")
+        st.warning("Primero carga una planilla en **Datos → Paso 1: Cargar propiedades**.")
         return
 
     with st.form("perfil_cliente_form"):
@@ -1460,7 +1472,7 @@ def show_explorador():
     cm = st.session_state.column_map
 
     if df.empty:
-        st.warning("Primero carga una planilla en **Fuente de propiedades**.")
+        st.warning("Primero carga una planilla en **Datos → Paso 1: Cargar propiedades**.")
         return
 
     df_filtrado = get_filtered_df()
@@ -1497,12 +1509,12 @@ def show_recomendaciones():
 
     df = st.session_state.df
     if df.empty:
-        st.warning("Primero carga una planilla en **Fuente de propiedades**.")
+        st.warning("Primero carga una planilla en **Datos → Paso 1: Cargar propiedades**.")
         return
 
     df_filtrado = get_filtered_df()
     if df_filtrado.empty:
-        st.info("No hay propiedades filtradas. Ajusta el perfil del cliente.")
+        st.info("No hay propiedades filtradas. Ajusta el perfil del cliente en **Datos → Paso 2**.")
         return
 
     st.markdown(
@@ -1620,7 +1632,7 @@ def show_agente_chat():
 
     df = st.session_state.df
     if df.empty:
-        st.warning("Primero carga una planilla en **Fuente de propiedades**.")
+        st.warning("Primero carga una planilla en **Datos → Paso 1: Cargar propiedades**.")
         return
 
     df_filtrado = get_filtered_df()
@@ -1665,7 +1677,7 @@ def show_exportar():
     st.header("📤 Exportar propuesta")
 
     if st.session_state.df.empty:
-        st.warning("Primero carga propiedades en **Fuente de propiedades**.")
+        st.warning("Primero carga propiedades en **Datos → Paso 1: Cargar propiedades**.")
         return
 
     if not st.session_state.last_recommendations:
@@ -1824,49 +1836,169 @@ def show_configuracion():
 
 
 # =========================
-# MENÚ LATERAL
+# WIZARD / MÓDULOS AGRUPADOS
+# =========================
+
+def show_modulo_datos():
+    step = st.session_state.get("datos_step", 1)
+    st.title("📁 Datos")
+    st.caption("Flujo guiado: cargar propiedades, perfilar cliente y explorar unidades.")
+
+    st.markdown(f"**Paso {step} de 3**")
+
+    if step == 1:
+        st.subheader("Paso 1: Cargar propiedades")
+        show_fuente_propiedades()
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if not st.session_state.df.empty and st.button("➡️ Siguiente: Perfil del cliente"):
+                st.session_state.datos_step = 2
+                st.experimental_rerun()
+        with col2:
+            st.button("Reiniciar flujo", on_click=lambda: reset_datos_step())
+
+    elif step == 2:
+        st.subheader("Paso 2: Perfil del cliente")
+        show_perfil_cliente()
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("⬅️ Volver a cargar propiedades"):
+                st.session_state.datos_step = 1
+                st.experimental_rerun()
+        with col2:
+            if st.button("➡️ Siguiente: Explorador"):
+                st.session_state.datos_step = 3
+                st.experimental_rerun()
+        with col3:
+            st.button("Reiniciar flujo", on_click=lambda: reset_datos_step())
+
+    elif step == 3:
+        st.subheader("Paso 3: Explorador de propiedades")
+        show_explorador()
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("⬅️ Volver a perfil del cliente"):
+                st.session_state.datos_step = 2
+                st.experimental_rerun()
+        with col2:
+            if st.button("Ir a análisis (dashboard y mercado) ➡️"):
+                st.session_state.main_menu = "📊 Análisis"
+                st.experimental_rerun()
+
+
+def reset_datos_step():
+    st.session_state.datos_step = 1
+
+
+def show_modulo_analisis():
+    st.title("📊 Análisis")
+    st.caption("Dashboard de precios, distribución y contexto del mercado.")
+
+    tabs = st.tabs(["🏗️ Dashboard de proyectos", "📰 Noticias & Tasas"])
+
+    with tabs[0]:
+        show_dashboard()
+    with tabs[1]:
+        show_noticias_tasas()
+
+    st.markdown("---")
+    if st.button("Ir a Recomendaciones IA ➡️"):
+        st.session_state.main_menu = "🧠 Recomendaciones IA"
+        st.experimental_rerun()
+
+
+def show_modulo_recomendaciones():
+    step = st.session_state.get("recom_step", 1)
+    st.title("🧠 Recomendaciones IA")
+    st.caption("Genera recomendaciones automáticas y arma propuestas listas para enviar.")
+
+    st.markdown(f"**Paso {step} de 2**")
+
+    if step == 1:
+        st.subheader("Paso 1: Generar recomendaciones IA")
+        show_recomendaciones()
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("⬅️ Volver a Análisis"):
+                st.session_state.main_menu = "📊 Análisis"
+                st.experimental_rerun()
+        with col2:
+            if st.session_state.last_recommendations and st.button("➡️ Siguiente: Exportar propuesta"):
+                st.session_state.recom_step = 2
+                st.experimental_rerun()
+
+    elif step == 2:
+        st.subheader("Paso 2: Exportar propuesta")
+        show_exportar()
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("⬅️ Volver a recomendaciones IA"):
+                st.session_state.recom_step = 1
+                st.experimental_rerun()
+        with col2:
+            if st.button("Ir al chat IA ➡️"):
+                st.session_state.main_menu = "🤖 Chat IA"
+                st.experimental_rerun()
+        with col3:
+            st.button("Reiniciar flujo de recomendaciones", on_click=lambda: reset_recom_step())
+
+
+def reset_recom_step():
+    st.session_state.recom_step = 1
+
+
+def show_modulo_chat():
+    st.title("🤖 Chat IA")
+    st.caption("Conversa con el Agente IA sobre estrategias, comparaciones y cierre de negocios.")
+    show_agente_chat()
+
+
+def show_modulo_configuracion():
+    st.title("⚙️ Configuración")
+    show_configuracion()
+
+
+# =========================
+# MENÚ LATERAL (SIMPLIFICADO)
 # =========================
 
 st.sidebar.title("Broker IA")
 st.sidebar.caption("Asistente inmobiliario potenciado con IA")
 
+menu_options = [
+    "📁 Datos",
+    "📊 Análisis",
+    "🧠 Recomendaciones IA",
+    "🤖 Chat IA",
+    "⚙️ Configuración",
+]
+
 menu = st.sidebar.radio(
     "Menú",
-    [
-        "Fuente de propiedades",
-        "Dashboard",
-        "Noticias & Tasas",
-        "Perfil del cliente",
-        "Explorador",
-        "Recomendaciones IA",
-        "Agente IA",
-        "Exportar propuesta",
-        "Configuración",
-    ],
+    menu_options,
+    index=menu_options.index(st.session_state.get("main_menu", "📁 Datos")),
 )
+st.session_state.main_menu = menu
 
 # =========================
 # ROUTER
 # =========================
 
-if menu == "Fuente de propiedades":
-    show_fuente_propiedades()
-elif menu == "Dashboard":
-    show_dashboard()
-elif menu == "Noticias & Tasas":
-    show_noticias_tasas()
-elif menu == "Perfil del cliente":
-    show_perfil_cliente()
-elif menu == "Explorador":
-    show_explorador()
-elif menu == "Recomendaciones IA":
-    show_recomendaciones()
-elif menu == "Agente IA":
-    show_agente_chat()
-elif menu == "Exportar propuesta":
-    show_exportar()
-elif menu == "Configuración":
-    show_configuracion()
+if menu == "📁 Datos":
+    show_modulo_datos()
+elif menu == "📊 Análisis":
+    show_modulo_analisis()
+elif menu == "🧠 Recomendaciones IA":
+    show_modulo_recomendaciones()
+elif menu == "🤖 Chat IA":
+    show_modulo_chat()
+elif menu == "⚙️ Configuración":
+    show_modulo_configuracion()
 
 # Footer con UF
 show_uf_footer()
