@@ -585,7 +585,9 @@ def fetch_chile_news(sources):
         if not url:
             continue
 
+        # -------------------------------
         # 1) Intentar como RSS / Atom
+        # -------------------------------
         usó_rss = False
         noticias_antes = len(noticias)
 
@@ -611,6 +613,7 @@ def fetch_chile_news(sources):
                     continue
 
                 texto = (titulo + " " + resumen).lower()
+                # seguimos filtrando por palabras clave para evitar ruido
                 if NEWS_KEYWORDS and not any(k in texto for k in NEWS_KEYWORDS):
                     continue
 
@@ -624,7 +627,7 @@ def fetch_chile_news(sources):
                     }
                 )
 
-        # 2) Si no funcionó RSS, scrape HTML simple
+        # Si no se agregó nada vía RSS (o no era RSS), probamos scrape HTML
         if (not usó_rss) or (len(noticias) == noticias_antes):
             try:
                 resp = requests.get(url, timeout=10)
@@ -641,7 +644,10 @@ def fetch_chile_news(sources):
                 else url
             )
 
+            # Intento 1: usar <article>
             articles = soup.find_all("article")
+
+            # Intento 2 (fallback): divs típicos de posts
             if not articles:
                 candidates = soup.select(
                     "div.post, div.article, div.entry, div.noticia, li.post"
@@ -659,11 +665,14 @@ def fetch_chile_news(sources):
                     continue
 
                 link = urljoin(url, href)
+
                 p = art.find("p")
                 resumen = p.get_text(strip=True) if p else ""
                 fecha = ""
 
                 texto = (titulo + " " + resumen).lower()
+                # Igual mantenemos filtro por palabras clave por seguridad,
+                # aunque las fuentes sean inmobiliarias
                 if NEWS_KEYWORDS and not any(k in texto for k in NEWS_KEYWORDS):
                     continue
 
@@ -689,6 +698,7 @@ def fetch_sbif_tasas():
       - df_tasas: DataFrame con columnas ['Título','Subtítulo','Fecha','Tasa (%)','Tasa_float', 'Tipo']
       - error_str: None si todo ok, o un string con el error si algo falla.
     """
+    # Puedes usar SBIF_API_KEY o CMF_API_KEY en secrets
     api_key = (
         st.secrets.get("SBIF_API_KEY")
         or st.secrets.get("CMF_API_KEY")
@@ -698,6 +708,8 @@ def fetch_sbif_tasas():
         return None, "Falta SBIF_API_KEY o CMF_API_KEY en st.secrets."
 
     year = datetime.now().year
+
+    # Endpoint TIP de CMF (igual al que probaste en el navegador)
     url = f"https://api.cmfchile.cl/api-sbifv3/recursos_api/tip/{year}?apikey={api_key}&formato=json"
 
     try:
@@ -706,6 +718,7 @@ def fetch_sbif_tasas():
         return None, f"Error de red llamando a CMF TIP: {e}"
 
     if resp.status_code != 200:
+        # Si hay error de key u otro código, devolvemos mensaje claro
         try:
             data_err = resp.json()
             msg = data_err.get("Mensaje") or data_err.get("message") or str(data_err)
@@ -713,11 +726,13 @@ def fetch_sbif_tasas():
             msg = resp.text[:200]
         return None, f"HTTP {resp.status_code} desde CMF TIP: {msg}"
 
+    # Intentar parsear JSON
     try:
         data = resp.json()
     except Exception as e:
         return None, f"No se pudo parsear JSON desde CMF TIP: {e}"
 
+    # La estructura puede ser {"TIPs":[...]} o directamente una lista
     if isinstance(data, dict) and "TIPs" in data:
         tips = data["TIPs"]
     elif isinstance(data, list):
@@ -727,6 +742,7 @@ def fetch_sbif_tasas():
 
     df = pd.DataFrame(tips)
 
+    # Normalizar nombres esperados
     rename_map = {}
     for col in df.columns:
         low = col.lower()
@@ -743,6 +759,7 @@ def fetch_sbif_tasas():
     if rename_map:
         df.rename(columns=rename_map, inplace=True)
 
+    # Filtro “hipotecario-like”: operaciones reajustables en moneda nacional y plazo ≥ 1 año
     if "Título" in df.columns and "Subtítulo" in df.columns:
         mask_hipo = df["Título"].astype(str).str.contains(
             "reajustables en moneda nacional", case=False, na=False
@@ -751,11 +768,13 @@ def fetch_sbif_tasas():
             "un año o más", case=False, na=False
         )
         df_filtrado = df[mask_hipo & mask_plazo].copy()
+        # Si el filtro no encuentra nada, nos quedamos con todos los TIP igual
         if df_filtrado.empty:
             df_filtrado = df.copy()
     else:
         df_filtrado = df.copy()
 
+    # Crear columna numérica Tasa_float a partir de "Tasa (%)"
     if "Tasa (%)" in df_filtrado.columns:
         serie = (
             df_filtrado["Tasa (%)"]
@@ -768,6 +787,7 @@ def fetch_sbif_tasas():
     else:
         df_filtrado["Tasa_float"] = pd.NA
 
+    # Ordenamos por Fecha (si se puede) y recortamos a algo manejable
     if "Fecha" in df_filtrado.columns:
         try:
             df_filtrado["Fecha_dt"] = pd.to_datetime(df_filtrado["Fecha"])
@@ -775,6 +795,7 @@ def fetch_sbif_tasas():
         except Exception:
             pass
 
+    # Dejamos solo columnas útiles para la app
     cols_order = ["Título", "Subtítulo", "Fecha", "Tasa (%)", "Tasa_float", "Tipo"]
     cols_present = [c for c in cols_order if c in df_filtrado.columns]
     df_view = df_filtrado[cols_present].head(50).copy()
@@ -782,6 +803,9 @@ def fetch_sbif_tasas():
     return df_view, None
 
 def compute_tasa_promedio_sbif(df_tasas):
+    """
+    Calcula una tasa promedio simple (en %) a partir de df_tasas SBIF.
+    """
     if df_tasas is None or df_tasas.empty:
         return None
     if "Tasa_float" not in df_tasas.columns:
@@ -793,10 +817,14 @@ def compute_tasa_promedio_sbif(df_tasas):
 
 
 def ia_insights_mercado(noticias, df_tasas, uf_valor):
+    """
+    IA que combina noticias + tasas hipotecarias + UF para dar insights de mercado.
+    """
     client = get_openai_client()
     if client is None:
         return None
 
+    # Compactar contexto
     top_news = noticias[:8] if noticias else []
     resumen_noticias = [
         f"- {n['titulo']} ({n['fuente']})"
@@ -836,6 +864,7 @@ Debes entregar SIEMPRE:
 5) Oportunidades tácticas (por comunas recomendables, tickets, tipo de unidad, plazo, etc.).
 
 Usa lenguaje claro, profesional, en español chileno.
+No inventes cifras específicas si no aparecen en el contexto, pero sí puedes interpretar tendencias.
 """
     )
 
@@ -845,8 +874,9 @@ CONTEXTO ESTRUCTURADO (JSON):
 {json.dumps(contexto, ensure_ascii=False)[:11000]}
 
 TAREA:
-- Analiza este contexto y entrega los bloques solicitados.
+- Analiza este contexto y entrega los 5 bloques solicitados.
 - No repitas el JSON. Solo responde en texto bien estructurado, con subtítulos y bullets.
+- Evita recomendar comunas que el contexto marque como riesgosas.
 """
 
     resp = client.chat.completions.create(
@@ -912,7 +942,7 @@ def show_dashboard():
     cm = st.session_state.column_map
 
     if df.empty:
-        st.warning("Primero carga una planilla en **Datos → Fuente de propiedades**.")
+        st.warning("Primero carga una planilla en **Fuente de propiedades**.")
         return
 
     df_dash = df.copy()
@@ -926,6 +956,7 @@ def show_dashboard():
     col_banos = cm.get("banos")
     col_ano = cm.get("ano_entrega_estimada")
 
+    # --- Limpieza numérica ---
     if col_precio_desde and col_precio_desde in df_dash.columns:
         df_dash[col_precio_desde] = _ensure_numeric(df_dash, col_precio_desde)
     if col_precio_hasta and col_precio_hasta in df_dash.columns:
@@ -933,6 +964,7 @@ def show_dashboard():
     if col_sup and col_sup in df_dash.columns:
         df_dash[col_sup] = _ensure_numeric(df_dash, col_sup)
 
+    # Precio UF promedio
     if col_precio_desde and col_precio_desde in df_dash.columns:
         if col_precio_hasta and col_precio_hasta in df_dash.columns:
             df_dash["precio_uf_promedio"] = (
@@ -949,6 +981,7 @@ def show_dashboard():
     else:
         df_dash["precio_uf_m2"] = None
 
+    # ---------------- Filtros ----------------
     with st.expander("🎛️ Filtros del dashboard", expanded=True):
         uf_min = int(df_dash["precio_uf_promedio"].min())
         uf_max = int(df_dash["precio_uf_promedio"].max())
@@ -1016,6 +1049,7 @@ def show_dashboard():
         else:
             anos_sel = []
 
+    # Aplicar filtros
     mask = df_dash["precio_uf_promedio"].between(
         rango_uf_dash[0],
         rango_uf_dash[1],
@@ -1038,6 +1072,7 @@ def show_dashboard():
         st.warning("No hay propiedades con los filtros actuales del dashboard.")
         return
 
+    # --------- Métricas resumen ----------
     col1, col2, col3, col4 = st.columns(4)
 
     total_props = len(df_dash)
@@ -1053,6 +1088,7 @@ def show_dashboard():
 
     st.markdown("---")
 
+    # --------- Precio mínimo por comuna ----------
     if col_comuna and col_comuna in df_dash.columns and col_precio_desde and col_precio_desde in df_dash.columns:
         st.subheader("Precio 'desde' mínimo por comuna (UF)")
 
@@ -1077,6 +1113,7 @@ def show_dashboard():
 
     st.markdown("---")
 
+    # --------- Histograma precios ----------
     st.subheader("Distribución de precios")
 
     hist = (
@@ -1095,6 +1132,7 @@ def show_dashboard():
     )
     st.altair_chart(hist, use_container_width=True)
 
+    # --------- Precio por comuna ----------
     if col_comuna and col_comuna in df_dash.columns:
         st.subheader("Precio promedio UF por comuna")
 
@@ -1117,6 +1155,7 @@ def show_dashboard():
         )
         st.altair_chart(bar_comuna, use_container_width=True)
 
+    # --------- Precio por tipo de unidad ----------
     if col_tipo and col_tipo in df_dash.columns:
         st.subheader("Precio promedio UF por tipo de unidad")
 
@@ -1139,6 +1178,7 @@ def show_dashboard():
         )
         st.altair_chart(bar_tipo, use_container_width=True)
 
+    # --------- Scatter precio vs m2 ----------
     if col_sup and col_sup in df_dash.columns:
         st.subheader("Relación precio UF vs superficie (m²)")
 
@@ -1179,85 +1219,97 @@ def show_dashboard():
 def show_noticias_tasas():
     st.header("📰 Noticias & Tasas (Chile)")
 
+    tab1, tab2, tab3 = st.tabs(
+        ["Noticias inmobiliarias", "Tasas hipotecarias (SBIF)", "Insights IA mercado"]
+    )
+
+    # UF actual para contexto
     uf_valor, uf_fecha = get_uf_value()
 
-    st.subheader("Noticias inmobiliarias chilenas")
+    with tab1:
+        st.subheader("Noticias inmobiliarias chilenas")
 
-    fuentes = st.session_state.news_sources
-    st.caption("Fuentes configuradas:")
-    for f in fuentes:
-        st.markdown(f"- `{f}`")
+        fuentes = st.session_state.news_sources
+        st.caption("Fuentes configuradas:")
+        for f in fuentes:
+            st.markdown(f"- `{f}`")
 
-    noticias = fetch_chile_news(fuentes)
+        noticias = fetch_chile_news(fuentes)
 
-    if not noticias:
-        st.info(
-            "No se encontraron noticias inmobiliarias recientes desde las fuentes configuradas. "
-            "Revisa las URLs en la sección Configuración."
-        )
-    else:
-        for n in noticias:
-            st.markdown("### " + n["titulo"])
-            info = []
-            if n["fuente"]:
-                info.append(n["fuente"])
-            if n["fecha"]:
-                info.append(n["fecha"])
-            if info:
-                st.caption(" · ".join(info))
-            if n["resumen"]:
-                st.write(n["resumen"])
-            if n["link"]:
-                st.markdown(f"[Ver nota completa]({n['link']})")
-            st.markdown("---")
-
-    st.markdown("## Tasas de créditos hipotecarios (SBIF Chile)")
-
-    df_tasas, error = fetch_sbif_tasas()
-
-    if error:
-        st.info(
-            f"No se pudieron obtener las tasas desde SBIF: {error}. "
-            "Verifica tu SBIF_API_KEY y la conectividad."
-        )
-    elif df_tasas is None or df_tasas.empty:
-        st.info(
-            "La API SBIF no devolvió información de tasas. "
-            "Podría ser un cambio en el servicio o falta de datos para el año actual."
-        )
-    else:
-        tasa_prom = compute_tasa_promedio_sbif(df_tasas)
-        if tasa_prom is not None:
-            st.metric(
-                "Tasa promedio referencial (aprox.)",
-                f"{tasa_prom:.2f} %",
+        if not noticias:
+            st.info(
+                "No se encontraron noticias inmobiliarias recientes desde las fuentes configuradas. "
+                "Revisa las URLs en la sección Configuración."
             )
+        else:
+            for n in noticias:
+                st.markdown("### " + n["titulo"])
+                info = []
+                if n["fuente"]:
+                    info.append(n["fuente"])
+                if n["fecha"]:
+                    info.append(n["fecha"])
+                if info:
+                    st.caption(" · ".join(info))
+                if n["resumen"]:
+                    st.write(n["resumen"])
+                if n["link"]:
+                    st.markdown(f"[Ver nota completa]({n['link']})")
+                st.markdown("---")
 
-        if uf_valor:
+    with tab2:
+        st.subheader("Tasas de créditos hipotecarios (SBIF Chile)")
+
+        df_tasas, error = fetch_sbif_tasas()
+
+        if error:
+            st.info(
+                f"No se pudieron obtener las tasas desde SBIF: {error}. "
+                "Verifica tu SBIF_API_KEY y la conectividad."
+            )
+        elif df_tasas is None or df_tasas.empty:
+            st.info(
+                "La API SBIF no devolvió información de tasas. "
+                "Podría ser un cambio en el servicio o falta de datos para el año actual."
+            )
+        else:
+            tasa_prom = compute_tasa_promedio_sbif(df_tasas)
+            if tasa_prom is not None:
+                st.metric(
+                    "Tasa promedio referencial (aprox.)",
+                    f"{tasa_prom:.2f} %",
+                )
+
+            if uf_valor:
+                st.caption(
+                    f"Referencia UF actual: 1 UF ≈ ${uf_valor:,.0f} CLP (mindicador.cl)"
+                    .replace(",", ".")
+                )
+
+            st.markdown("### Tabla de tasas por banco/tipo")
+            st.dataframe(df_tasas, use_container_width=True)
             st.caption(
-                f"Referencia UF actual: 1 UF ≈ ${uf_valor:,.0f} CLP (mindicador.cl)"
-                .replace(",", ".")
+                "Origen: SBIF (vía API). Columnas y contenido sujetos a la publicación oficial."
             )
 
-        st.markdown("### Tabla de tasas por banco/tipo")
-        st.dataframe(df_tasas, use_container_width=True)
-        st.caption(
-            "Origen: SBIF (vía API). Columnas y contenido sujetos a la publicación oficial."
-        )
+    with tab3:
+        st.subheader("Insights IA: mercado inmobiliario & tasas")
 
-    st.markdown("## Insights IA: mercado inmobiliario & tasas")
+        fuentes = st.session_state.news_sources
+        noticias = fetch_chile_news(fuentes)
+        df_tasas, error = fetch_sbif_tasas()
 
-    if (not noticias) and (df_tasas is None or df_tasas.empty):
-        st.info(
-            "No hay suficientes datos de noticias o tasas para generar insights. "
-            "Revisa la conexión y las fuentes configuradas."
-        )
-    else:
-        if st.button("🧠 Generar insights IA del mercado"):
-            with st.spinner("Analizando mercado, noticias y tasas..."):
-                texto = ia_insights_mercado(noticias or [], df_tasas, uf_valor)
-            if texto:
-                st.markdown(texto)
+        if (not noticias) and (df_tasas is None or df_tasas.empty):
+            st.info(
+                "No hay suficientes datos de noticias o tasas para generar insights. "
+                "Revisa la conexión y las fuentes configuradas."
+            )
+        else:
+            if st.button("🧠 Generar insights IA del mercado"):
+                with st.spinner("Analizando mercado, noticias y tasas..."):
+                    texto = ia_insights_mercado(noticias or [], df_tasas, uf_valor)
+                if texto:
+                    st.markdown(texto)
 
 
 def show_perfil_cliente():
@@ -1268,7 +1320,7 @@ def show_perfil_cliente():
     cp = st.session_state.client_profile
 
     if df.empty:
-        st.warning("Primero carga una planilla en **Datos → Fuente de propiedades**.")
+        st.warning("Primero carga una planilla en **Fuente de propiedades**.")
         return
 
     with st.form("perfil_cliente_form"):
@@ -1296,6 +1348,7 @@ def show_perfil_cliente():
             ].index(cp["objetivo"]),
         )
 
+        # ---- Rango de precio UF según la planilla ----
         col_precio_desde = cm.get("precio_uf_desde")
         if col_precio_desde and col_precio_desde in df.columns:
             df_tmp = df.copy()
@@ -1326,6 +1379,7 @@ def show_perfil_cliente():
                 index=[0, 1, 2, 3, 4].index(cp["banos_min"]),
             )
 
+        # ---- Rango de superficie ----
         col_sup = cm.get("superficie_total_m2")
         if col_sup and col_sup in df.columns:
             df_tmp2 = df.copy()
@@ -1342,6 +1396,7 @@ def show_perfil_cliente():
             value=(cp["rango_m2"][0], cp["rango_m2"][1]),
         )
 
+        # ---- Filtros por comuna / etapa / año / estado ----
         col_comuna = cm.get("comuna")
         if col_comuna and col_comuna in df.columns:
             comunas = sorted(df[col_comuna].dropna().unique())
@@ -1388,6 +1443,7 @@ def show_perfil_cliente():
 
         submitted = st.form_submit_button("💾 Guardar perfil")
 
+    # Fuera del form
     st.session_state.client_profile = cp
 
     if submitted:
@@ -1404,7 +1460,7 @@ def show_explorador():
     cm = st.session_state.column_map
 
     if df.empty:
-        st.warning("Primero carga una planilla en **Datos → Fuente de propiedades**.")
+        st.warning("Primero carga una planilla en **Fuente de propiedades**.")
         return
 
     df_filtrado = get_filtered_df()
@@ -1441,12 +1497,12 @@ def show_recomendaciones():
 
     df = st.session_state.df
     if df.empty:
-        st.warning("Primero carga una planilla en **Datos → Fuente de propiedades**.")
+        st.warning("Primero carga una planilla en **Fuente de propiedades**.")
         return
 
     df_filtrado = get_filtered_df()
     if df_filtrado.empty:
-        st.info("No hay propiedades filtradas. Ajusta el perfil del cliente en **Datos → Perfil del cliente**.")
+        st.info("No hay propiedades filtradas. Ajusta el perfil del cliente.")
         return
 
     st.markdown(
@@ -1564,7 +1620,7 @@ def show_agente_chat():
 
     df = st.session_state.df
     if df.empty:
-        st.warning("Primero carga una planilla en **Datos → Fuente de propiedades**.")
+        st.warning("Primero carga una planilla en **Fuente de propiedades**.")
         return
 
     df_filtrado = get_filtered_df()
@@ -1609,12 +1665,12 @@ def show_exportar():
     st.header("📤 Exportar propuesta")
 
     if st.session_state.df.empty:
-        st.warning("Primero carga propiedades en **Datos → Fuente de propiedades**.")
+        st.warning("Primero carga propiedades en **Fuente de propiedades**.")
         return
 
     if not st.session_state.last_recommendations:
         st.info(
-            "Aún no hay recomendaciones guardadas. Genera recomendaciones en **Recomendaciones IA → Recomendaciones IA**."
+            "Aún no hay recomendaciones guardadas. Genera recomendaciones en la sección **Recomendaciones IA**."
         )
         return
 
@@ -1768,71 +1824,48 @@ def show_configuracion():
 
 
 # =========================
-# MENÚ LATERAL: MÓDULO + SUBMENÚ
+# MENÚ LATERAL
 # =========================
 
 st.sidebar.title("Broker IA")
 st.sidebar.caption("Asistente inmobiliario potenciado con IA")
 
-modulo = st.sidebar.selectbox(
-    "Módulo",
-    ["📁 Datos", "📊 Análisis", "🧠 Recomendaciones IA", "🤖 Chat IA", "⚙️ Configuración"],
+menu = st.sidebar.radio(
+    "Menú",
+    [
+        "Fuente de propiedades",
+        "Dashboard",
+        "Noticias & Tasas",
+        "Perfil del cliente",
+        "Explorador",
+        "Recomendaciones IA",
+        "Agente IA",
+        "Exportar propuesta",
+        "Configuración",
+    ],
 )
 
-if modulo == "📁 Datos":
-    sub = st.sidebar.radio(
-        "Sección",
-        ["Fuente de propiedades", "Perfil del cliente", "Explorador"],
-    )
-elif modulo == "📊 Análisis":
-    sub = st.sidebar.radio(
-        "Sección",
-        ["Dashboard", "Noticias & Tasas"],
-    )
-elif modulo == "🧠 Recomendaciones IA":
-    sub = st.sidebar.radio(
-        "Sección",
-        ["Recomendaciones IA", "Exportar propuesta"],
-    )
-elif modulo == "🤖 Chat IA":
-    sub = st.sidebar.radio(
-        "Sección",
-        ["Agente IA"],
-    )
-else:  # Configuración
-    sub = st.sidebar.radio(
-        "Sección",
-        ["Configuración"],
-    )
-
 # =========================
-# ROUTER PRINCIPAL
+# ROUTER
 # =========================
 
-if modulo == "📁 Datos":
-    if sub == "Fuente de propiedades":
-        show_fuente_propiedades()
-    elif sub == "Perfil del cliente":
-        show_perfil_cliente()
-    elif sub == "Explorador":
-        show_explorador()
-
-elif modulo == "📊 Análisis":
-    if sub == "Dashboard":
-        show_dashboard()
-    elif sub == "Noticias & Tasas":
-        show_noticias_tasas()
-
-elif modulo == "🧠 Recomendaciones IA":
-    if sub == "Recomendaciones IA":
-        show_recomendaciones()
-    elif sub == "Exportar propuesta":
-        show_exportar()
-
-elif modulo == "🤖 Chat IA":
+if menu == "Fuente de propiedades":
+    show_fuente_propiedades()
+elif menu == "Dashboard":
+    show_dashboard()
+elif menu == "Noticias & Tasas":
+    show_noticias_tasas()
+elif menu == "Perfil del cliente":
+    show_perfil_cliente()
+elif menu == "Explorador":
+    show_explorador()
+elif menu == "Recomendaciones IA":
+    show_recomendaciones()
+elif menu == "Agente IA":
     show_agente_chat()
-
-elif modulo == "⚙️ Configuración":
+elif menu == "Exportar propuesta":
+    show_exportar()
+elif menu == "Configuración":
     show_configuracion()
 
 # Footer con UF
