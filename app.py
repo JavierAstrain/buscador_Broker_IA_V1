@@ -892,7 +892,7 @@ TAREA:
 
 
 # =========================
-# VISTAS (DERECHA)
+# VISTAS BASE (REUTILIZABLES)
 # =========================
 
 def show_fuente_propiedades():
@@ -1502,7 +1502,7 @@ def show_recomendaciones():
 
     df_filtrado = get_filtered_df()
     if df_filtrado.empty:
-        st.info("No hay propiedades filtradas. Ajusta el perfil del cliente.")
+        st.info("No hay propiedades filtradas. Ajusta el perfil del cliente en **Perfil del cliente**.")
         return
 
     st.markdown(
@@ -1833,15 +1833,15 @@ st.sidebar.caption("Asistente inmobiliario potenciado con IA")
 menu = st.sidebar.radio(
     "Menú",
     [
-        "Fuente de propiedades",
-        "Dashboard",
-        "Noticias & Tasas",
-        "Perfil del cliente",
-        "Explorador",
-        "Recomendaciones IA",
-        "Agente IA",
-        "Exportar propuesta",
-        "Configuración",
+        "🏗️ Fuente de propiedades",
+        "📊 Dashboard",
+        "📰 Noticias & Tasas",
+        "👤 Perfil del cliente",
+        "🔍 Explorador",
+        "🧠 Recomendaciones IA",
+        "🤖 Agente IA",
+        "📤 Exportar propuesta",
+        "⚙️ Configuración",
     ],
 )
 
@@ -1849,23 +1849,23 @@ menu = st.sidebar.radio(
 # ROUTER
 # =========================
 
-if menu == "Fuente de propiedades":
+if menu == "🏗️ Fuente de propiedades":
     show_fuente_propiedades()
-elif menu == "Dashboard":
+elif menu == "📊 Dashboard":
     show_dashboard()
-elif menu == "Noticias & Tasas":
+elif menu == "📰 Noticias & Tasas":
     show_noticias_tasas()
-elif menu == "Perfil del cliente":
+elif menu == "👤 Perfil del cliente":
     show_perfil_cliente()
-elif menu == "Explorador":
+elif menu == "🔍 Explorador":
     show_explorador()
-elif menu == "Recomendaciones IA":
+elif menu == "🧠 Recomendaciones IA":
     show_recomendaciones()
-elif menu == "Agente IA":
+elif menu == "🤖 Agente IA":
     show_agente_chat()
-elif menu == "Exportar propuesta":
+elif menu == "📤 Exportar propuesta":
     show_exportar()
-elif menu == "Configuración":
+elif menu == "⚙️ Configuración":
     show_configuracion()
 
 # Footer con UF
