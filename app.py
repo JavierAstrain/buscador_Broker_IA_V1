@@ -566,12 +566,6 @@ def fetch_chile_news(sources):
     """
     Lee noticias desde una lista de fuentes chilenas y filtra SOLO noticias
     inmobiliarias / hipotecarias mediante palabras clave.
-
-    - Si la URL es un RSS/Atom válido, se usa feedparser.
-    - Si la URL es una página HTML (como eldiarioinmobiliario.cl), se hace un
-      scrape simple con BeautifulSoup.
-
-    Retorna lista de dicts: {titulo, resumen, link, fuente, fecha}
     """
     try:
         import feedparser
@@ -585,9 +579,6 @@ def fetch_chile_news(sources):
         if not url:
             continue
 
-        # -------------------------------
-        # 1) Intentar como RSS / Atom
-        # -------------------------------
         usó_rss = False
         noticias_antes = len(noticias)
 
@@ -613,7 +604,6 @@ def fetch_chile_news(sources):
                     continue
 
                 texto = (titulo + " " + resumen).lower()
-                # seguimos filtrando por palabras clave para evitar ruido
                 if NEWS_KEYWORDS and not any(k in texto for k in NEWS_KEYWORDS):
                     continue
 
@@ -627,7 +617,6 @@ def fetch_chile_news(sources):
                     }
                 )
 
-        # Si no se agregó nada vía RSS (o no era RSS), probamos scrape HTML
         if (not usó_rss) or (len(noticias) == noticias_antes):
             try:
                 resp = requests.get(url, timeout=10)
@@ -644,10 +633,7 @@ def fetch_chile_news(sources):
                 else url
             )
 
-            # Intento 1: usar <article>
             articles = soup.find_all("article")
-
-            # Intento 2 (fallback): divs típicos de posts
             if not articles:
                 candidates = soup.select(
                     "div.post, div.article, div.entry, div.noticia, li.post"
@@ -665,14 +651,11 @@ def fetch_chile_news(sources):
                     continue
 
                 link = urljoin(url, href)
-
                 p = art.find("p")
                 resumen = p.get_text(strip=True) if p else ""
                 fecha = ""
 
                 texto = (titulo + " " + resumen).lower()
-                # Igual mantenemos filtro por palabras clave por seguridad,
-                # aunque las fuentes sean inmobiliarias
                 if NEWS_KEYWORDS and not any(k in texto for k in NEWS_KEYWORDS):
                     continue
 
@@ -688,17 +671,13 @@ def fetch_chile_news(sources):
 
     return noticias
 
+
 @st.cache_data(ttl=3600)
 def fetch_sbif_tasas():
     """
     Obtiene tasas de interés promedio (TIP) desde la API CMF,
     usando el recurso TIP del año actual.
-
-    Retorna: (df_tasas, error_str)
-      - df_tasas: DataFrame con columnas ['Título','Subtítulo','Fecha','Tasa (%)','Tasa_float', 'Tipo']
-      - error_str: None si todo ok, o un string con el error si algo falla.
     """
-    # Puedes usar SBIF_API_KEY o CMF_API_KEY en secrets
     api_key = (
         st.secrets.get("SBIF_API_KEY")
         or st.secrets.get("CMF_API_KEY")
@@ -708,8 +687,6 @@ def fetch_sbif_tasas():
         return None, "Falta SBIF_API_KEY o CMF_API_KEY en st.secrets."
 
     year = datetime.now().year
-
-    # Endpoint TIP de CMF (igual al que probaste en el navegador)
     url = f"https://api.cmfchile.cl/api-sbifv3/recursos_api/tip/{year}?apikey={api_key}&formato=json"
 
     try:
@@ -718,7 +695,6 @@ def fetch_sbif_tasas():
         return None, f"Error de red llamando a CMF TIP: {e}"
 
     if resp.status_code != 200:
-        # Si hay error de key u otro código, devolvemos mensaje claro
         try:
             data_err = resp.json()
             msg = data_err.get("Mensaje") or data_err.get("message") or str(data_err)
@@ -726,13 +702,11 @@ def fetch_sbif_tasas():
             msg = resp.text[:200]
         return None, f"HTTP {resp.status_code} desde CMF TIP: {msg}"
 
-    # Intentar parsear JSON
     try:
         data = resp.json()
     except Exception as e:
         return None, f"No se pudo parsear JSON desde CMF TIP: {e}"
 
-    # La estructura puede ser {"TIPs":[...]} o directamente una lista
     if isinstance(data, dict) and "TIPs" in data:
         tips = data["TIPs"]
     elif isinstance(data, list):
@@ -742,7 +716,6 @@ def fetch_sbif_tasas():
 
     df = pd.DataFrame(tips)
 
-    # Normalizar nombres esperados
     rename_map = {}
     for col in df.columns:
         low = col.lower()
@@ -759,7 +732,6 @@ def fetch_sbif_tasas():
     if rename_map:
         df.rename(columns=rename_map, inplace=True)
 
-    # Filtro “hipotecario-like”: operaciones reajustables en moneda nacional y plazo ≥ 1 año
     if "Título" in df.columns and "Subtítulo" in df.columns:
         mask_hipo = df["Título"].astype(str).str.contains(
             "reajustables en moneda nacional", case=False, na=False
@@ -768,13 +740,11 @@ def fetch_sbif_tasas():
             "un año o más", case=False, na=False
         )
         df_filtrado = df[mask_hipo & mask_plazo].copy()
-        # Si el filtro no encuentra nada, nos quedamos con todos los TIP igual
         if df_filtrado.empty:
             df_filtrado = df.copy()
     else:
         df_filtrado = df.copy()
 
-    # Crear columna numérica Tasa_float a partir de "Tasa (%)"
     if "Tasa (%)" in df_filtrado.columns:
         serie = (
             df_filtrado["Tasa (%)"]
@@ -787,7 +757,6 @@ def fetch_sbif_tasas():
     else:
         df_filtrado["Tasa_float"] = pd.NA
 
-    # Ordenamos por Fecha (si se puede) y recortamos a algo manejable
     if "Fecha" in df_filtrado.columns:
         try:
             df_filtrado["Fecha_dt"] = pd.to_datetime(df_filtrado["Fecha"])
@@ -795,17 +764,14 @@ def fetch_sbif_tasas():
         except Exception:
             pass
 
-    # Dejamos solo columnas útiles para la app
     cols_order = ["Título", "Subtítulo", "Fecha", "Tasa (%)", "Tasa_float", "Tipo"]
     cols_present = [c for c in cols_order if c in df_filtrado.columns]
     df_view = df_filtrado[cols_present].head(50).copy()
 
     return df_view, None
 
+
 def compute_tasa_promedio_sbif(df_tasas):
-    """
-    Calcula una tasa promedio simple (en %) a partir de df_tasas SBIF.
-    """
     if df_tasas is None or df_tasas.empty:
         return None
     if "Tasa_float" not in df_tasas.columns:
@@ -817,14 +783,10 @@ def compute_tasa_promedio_sbif(df_tasas):
 
 
 def ia_insights_mercado(noticias, df_tasas, uf_valor):
-    """
-    IA que combina noticias + tasas hipotecarias + UF para dar insights de mercado.
-    """
     client = get_openai_client()
     if client is None:
         return None
 
-    # Compactar contexto
     top_news = noticias[:8] if noticias else []
     resumen_noticias = [
         f"- {n['titulo']} ({n['fuente']})"
@@ -864,7 +826,6 @@ Debes entregar SIEMPRE:
 5) Oportunidades tácticas (por comunas recomendables, tickets, tipo de unidad, plazo, etc.).
 
 Usa lenguaje claro, profesional, en español chileno.
-No inventes cifras específicas si no aparecen en el contexto, pero sí puedes interpretar tendencias.
 """
     )
 
@@ -874,9 +835,8 @@ CONTEXTO ESTRUCTURADO (JSON):
 {json.dumps(contexto, ensure_ascii=False)[:11000]}
 
 TAREA:
-- Analiza este contexto y entrega los 5 bloques solicitados.
+- Analiza este contexto y entrega los bloques solicitados.
 - No repitas el JSON. Solo responde en texto bien estructurado, con subtítulos y bullets.
-- Evita recomendar comunas que el contexto marque como riesgosas.
 """
 
     resp = client.chat.completions.create(
@@ -892,7 +852,7 @@ TAREA:
 
 
 # =========================
-# VISTAS BASE (REUTILIZABLES)
+# VISTAS BASE
 # =========================
 
 def show_fuente_propiedades():
@@ -956,7 +916,6 @@ def show_dashboard():
     col_banos = cm.get("banos")
     col_ano = cm.get("ano_entrega_estimada")
 
-    # --- Limpieza numérica ---
     if col_precio_desde and col_precio_desde in df_dash.columns:
         df_dash[col_precio_desde] = _ensure_numeric(df_dash, col_precio_desde)
     if col_precio_hasta and col_precio_hasta in df_dash.columns:
@@ -964,7 +923,6 @@ def show_dashboard():
     if col_sup and col_sup in df_dash.columns:
         df_dash[col_sup] = _ensure_numeric(df_dash, col_sup)
 
-    # Precio UF promedio
     if col_precio_desde and col_precio_desde in df_dash.columns:
         if col_precio_hasta and col_precio_hasta in df_dash.columns:
             df_dash["precio_uf_promedio"] = (
@@ -981,7 +939,6 @@ def show_dashboard():
     else:
         df_dash["precio_uf_m2"] = None
 
-    # ---------------- Filtros ----------------
     with st.expander("🎛️ Filtros del dashboard", expanded=True):
         uf_min = int(df_dash["precio_uf_promedio"].min())
         uf_max = int(df_dash["precio_uf_promedio"].max())
@@ -1049,7 +1006,6 @@ def show_dashboard():
         else:
             anos_sel = []
 
-    # Aplicar filtros
     mask = df_dash["precio_uf_promedio"].between(
         rango_uf_dash[0],
         rango_uf_dash[1],
@@ -1072,7 +1028,6 @@ def show_dashboard():
         st.warning("No hay propiedades con los filtros actuales del dashboard.")
         return
 
-    # --------- Métricas resumen ----------
     col1, col2, col3, col4 = st.columns(4)
 
     total_props = len(df_dash)
@@ -1088,7 +1043,6 @@ def show_dashboard():
 
     st.markdown("---")
 
-    # --------- Precio mínimo por comuna ----------
     if col_comuna and col_comuna in df_dash.columns and col_precio_desde and col_precio_desde in df_dash.columns:
         st.subheader("Precio 'desde' mínimo por comuna (UF)")
 
@@ -1113,7 +1067,6 @@ def show_dashboard():
 
     st.markdown("---")
 
-    # --------- Histograma precios ----------
     st.subheader("Distribución de precios")
 
     hist = (
@@ -1132,7 +1085,6 @@ def show_dashboard():
     )
     st.altair_chart(hist, use_container_width=True)
 
-    # --------- Precio por comuna ----------
     if col_comuna and col_comuna in df_dash.columns:
         st.subheader("Precio promedio UF por comuna")
 
@@ -1155,7 +1107,6 @@ def show_dashboard():
         )
         st.altair_chart(bar_comuna, use_container_width=True)
 
-    # --------- Precio por tipo de unidad ----------
     if col_tipo and col_tipo in df_dash.columns:
         st.subheader("Precio promedio UF por tipo de unidad")
 
@@ -1178,7 +1129,6 @@ def show_dashboard():
         )
         st.altair_chart(bar_tipo, use_container_width=True)
 
-    # --------- Scatter precio vs m2 ----------
     if col_sup and col_sup in df_dash.columns:
         st.subheader("Relación precio UF vs superficie (m²)")
 
@@ -1223,7 +1173,6 @@ def show_noticias_tasas():
         ["Noticias inmobiliarias", "Tasas hipotecarias (SBIF)", "Insights IA mercado"]
     )
 
-    # UF actual para contexto
     uf_valor, uf_fecha = get_uf_value()
 
     with tab1:
@@ -1348,7 +1297,6 @@ def show_perfil_cliente():
             ].index(cp["objetivo"]),
         )
 
-        # ---- Rango de precio UF según la planilla ----
         col_precio_desde = cm.get("precio_uf_desde")
         if col_precio_desde and col_precio_desde in df.columns:
             df_tmp = df.copy()
@@ -1379,7 +1327,6 @@ def show_perfil_cliente():
                 index=[0, 1, 2, 3, 4].index(cp["banos_min"]),
             )
 
-        # ---- Rango de superficie ----
         col_sup = cm.get("superficie_total_m2")
         if col_sup and col_sup in df.columns:
             df_tmp2 = df.copy()
@@ -1396,7 +1343,6 @@ def show_perfil_cliente():
             value=(cp["rango_m2"][0], cp["rango_m2"][1]),
         )
 
-        # ---- Filtros por comuna / etapa / año / estado ----
         col_comuna = cm.get("comuna")
         if col_comuna and col_comuna in df.columns:
             comunas = sorted(df[col_comuna].dropna().unique())
@@ -1443,7 +1389,6 @@ def show_perfil_cliente():
 
         submitted = st.form_submit_button("💾 Guardar perfil")
 
-    # Fuera del form
     st.session_state.client_profile = cp
 
     if submitted:
@@ -1824,6 +1769,222 @@ def show_configuracion():
 
 
 # =========================
+# NUEVO MÓDULO: SIMULACIÓN FINANCIERA
+# =========================
+
+def show_simulacion():
+    st.header("📈 Simulación financiera")
+
+    df = st.session_state.df
+    cm = st.session_state.column_map
+
+    if df.empty:
+        st.warning("Primero carga una planilla en **Fuente de propiedades**.")
+        return
+
+    df_filtrado = get_filtered_df()
+    if df_filtrado.empty:
+        st.info("No hay propiedades filtradas. Ajusta el perfil del cliente.")
+        return
+
+    df_sel = df_filtrado.reset_index(drop=True)
+    cm = st.session_state.column_map
+
+    col_nombre = cm.get("nombre_proyecto")
+    col_comuna = cm.get("comuna")
+    col_precio_desde = cm.get("precio_uf_desde")
+
+    opciones = []
+    idx_map = {}
+    for i, row in df_sel.iterrows():
+        nombre = row.get(col_nombre, f"Proyecto #{i+1}") if col_nombre else f"Proyecto #{i+1}"
+        comuna = row.get(col_comuna, "") if col_comuna else ""
+        precio_str = ""
+        if col_precio_desde and col_precio_desde in df_sel.columns:
+            temp_df = pd.DataFrame([row])
+            precio_val = _ensure_numeric(temp_df, col_precio_desde).iloc[0]
+            if pd.notna(precio_val):
+                precio_str = f" - desde {precio_val:,.0f} UF"
+        etiqueta = f"#{i+1} – {nombre} ({comuna}){precio_str}"
+        opciones.append(etiqueta)
+        idx_map[etiqueta] = i
+
+    st.markdown("Selecciona la propiedad para simular el crédito y la renta:")
+
+    seleccion = st.selectbox("Propiedad", opciones)
+
+    fila = df_sel.iloc[idx_map[seleccion]]
+
+    precio_uf = None
+    if col_precio_desde and col_precio_desde in df_sel.columns:
+        temp_df = pd.DataFrame([fila])
+        valor = _ensure_numeric(temp_df, col_precio_desde).iloc[0]
+        if pd.notna(valor):
+            precio_uf = float(valor)
+
+    st.markdown("### Datos base de la propiedad")
+
+    info = []
+    if col_nombre:
+        info.append(f"**Proyecto:** {fila.get(col_nombre, '')}")
+    if col_comuna:
+        info.append(f"**Comuna:** {fila.get(col_comuna, '')}")
+    if cm.get("tipo_unidad"):
+        info.append(f"**Tipo unidad:** {fila.get(cm['tipo_unidad'], '')}")
+    if cm.get("dormitorios") and cm.get("banos"):
+        info.append(
+            f"**Programa:** {fila.get(cm['dormitorios'], '')}D / {fila.get(cm['banos'], '')}B"
+        )
+    if cm.get("superficie_total_m2"):
+        info.append(
+            f"**Superficie aprox:** {fila.get(cm['superficie_total_m2'], '')} m²"
+        )
+
+    if info:
+        st.markdown("  \n".join(info))
+
+    if precio_uf is None:
+        st.warning("No se pudo leer el precio 'desde' en UF desde la planilla.")
+        precio_uf = st.number_input(
+            "Ingresa manualmente el precio de la propiedad (UF)",
+            min_value=500.0,
+            max_value=50000.0,
+            value=3000.0,
+            step=10.0,
+        )
+    else:
+        st.info(f"Precio de referencia (desde planilla): **{precio_uf:,.0f} UF**")
+
+    st.markdown("---")
+    st.subheader("Parámetros del crédito hipotecario")
+
+    colc1, colc2, colc3 = st.columns(3)
+    with colc1:
+        pie_pct = st.slider("Pie (%)", min_value=0, max_value=60, value=20, step=5)
+    with colc2:
+        tasa_anual = st.number_input(
+            "Tasa anual (%)",
+            min_value=1.0,
+            max_value=15.0,
+            value=5.0,
+            step=0.1,
+            help="Tasa de interés anual del crédito hipotecario.",
+        )
+    with colc3:
+        plazo_anios = st.slider(
+            "Plazo (años)",
+            min_value=5,
+            max_value=35,
+            value=25,
+            step=1,
+        )
+
+    st.markdown("### Parámetros de renta y costos")
+
+    colr1, colr2, colr3 = st.columns(3)
+
+    renta_default = precio_uf * 0.004 if precio_uf else 20.0  # ~0,4% mensual
+    with colr1:
+        renta_uf = st.number_input(
+            "Renta estimada mensual (UF)",
+            min_value=0.0,
+            max_value=100.0,
+            value=float(round(renta_default, 1)),
+            step=0.1,
+            help="Renta bruta que esperas cobrar por arriendo.",
+        )
+    with colr2:
+        gastos_uf = st.number_input(
+            "Gastos mensuales (UF)",
+            min_value=0.0,
+            max_value=50.0,
+            value=3.0,
+            step=0.5,
+            help="Gastos comunes, mantenciones, seguros, administración, etc.",
+        )
+    with colr3:
+        vacancia_pct = st.slider(
+            "Vacancia estimada (%)",
+            min_value=0,
+            max_value=30,
+            value=5,
+            step=1,
+            help="Porcentaje del año que esperas tener el depto desocupado.",
+        )
+
+    # =========================
+    # CÁLCULOS
+    # =========================
+    pie_uf = precio_uf * pie_pct / 100.0
+    monto_credito_uf = max(precio_uf - pie_uf, 0.0)
+
+    tasa_mensual = (tasa_anual / 100.0) / 12.0
+    n_cuotas = plazo_anios * 12
+
+    if tasa_mensual > 0 and n_cuotas > 0:
+        dividendo_uf = monto_credito_uf * tasa_mensual / (1 - (1 + tasa_mensual) ** (-n_cuotas))
+    else:
+        dividendo_uf = monto_credito_uf / n_cuotas if n_cuotas > 0 else 0.0
+
+    renta_efectiva_uf = renta_uf * (1 - vacancia_pct / 100.0)
+    flujo_neto_uf = renta_efectiva_uf - gastos_uf - dividendo_uf
+
+    roi_bruta = (renta_efectiva_uf * 12.0 / precio_uf * 100.0) if precio_uf > 0 else 0.0
+    roi_neta = (flujo_neto_uf * 12.0 / pie_uf * 100.0) if pie_uf > 0 else 0.0
+
+    uf_valor, _ = get_uf_value()
+    if uf_valor:
+        dividendo_clp = dividendo_uf * uf_valor
+        renta_efectiva_clp = renta_efectiva_uf * uf_valor
+        flujo_neto_clp = flujo_neto_uf * uf_valor
+    else:
+        dividendo_clp = renta_efectiva_clp = flujo_neto_clp = None
+
+    st.markdown("---")
+    st.subheader("Resumen de la inversión")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Precio propiedad", f"{precio_uf:,.0f} UF")
+    c2.metric("Pie", f"{pie_uf:,.0f} UF")
+    c3.metric("Monto crédito", f"{monto_credito_uf:,.0f} UF")
+
+    c4, c5, c6 = st.columns(3)
+    if dividendo_clp:
+        c4.metric(
+            "Dividendo mensual",
+            f"{dividendo_uf:,.1f} UF",
+            help=f"≈ ${dividendo_clp:,.0f} CLP",
+        )
+    else:
+        c4.metric("Dividendo mensual", f"{dividendo_uf:,.1f} UF")
+
+    if renta_efectiva_clp:
+        c5.metric(
+            "Renta efectiva (vacancia incluida)",
+            f"{renta_efectiva_uf:,.1f} UF",
+            help=f"≈ ${renta_efectiva_clp:,.0f} CLP",
+        )
+    else:
+        c5.metric(
+            "Renta efectiva (vacancia incluida)",
+            f"{renta_efectiva_uf:,.1f} UF",
+        )
+
+    if flujo_neto_clp:
+        c6.metric(
+            "Flujo mensual neto",
+            f"{flujo_neto_uf:,.1f} UF",
+            help=f"≈ ${flujo_neto_clp:,.0f} CLP",
+        )
+    else:
+        c6.metric("Flujo mensual neto", f"{flujo_neto_uf:,.1f} UF")
+
+    st.markdown("### Rentabilidad estimada")
+    st.markdown(f"- **Rentabilidad bruta sobre valor total:** {roi_bruta:,.1f} % anual")
+    st.markdown(f"- **Rentabilidad neta sobre pie:** {roi_neta:,.1f} % anual")
+
+
+# =========================
 # MENÚ LATERAL
 # =========================
 
@@ -1840,6 +2001,7 @@ menu = st.sidebar.radio(
         "🔍 Explorador",
         "🧠 Recomendaciones IA",
         "🤖 Agente IA",
+        "📈 Simulación financiera",
         "📤 Exportar propuesta",
         "⚙️ Configuración",
     ],
@@ -1863,6 +2025,8 @@ elif menu == "🧠 Recomendaciones IA":
     show_recomendaciones()
 elif menu == "🤖 Agente IA":
     show_agente_chat()
+elif menu == "📈 Simulación financiera":
+    show_simulacion()
 elif menu == "📤 Exportar propuesta":
     show_exportar()
 elif menu == "⚙️ Configuración":
